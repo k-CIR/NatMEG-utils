@@ -2,6 +2,7 @@
 # #!/home/natmeg/miniforge3/envs/mne/bin/python
 import pandas as pd
 import json
+import yaml
 import re
 import os
 from shutil import copy2
@@ -45,13 +46,16 @@ from utils import (
 ###############################################################################
 exclude_patterns = [r'-\d+\.fif', '_trans', 'avg.fif']
 
-InstitutionName = 'Karolinska Institutet'
-InstitutionAddress = 'Nobels vag 9, 171 77, Stockholm, Sweden'
-InstitutionDepartmentName = 'Department of Clinical Neuroscience (CNS)'
+
 global data
 ###############################################################################
 # Functions: Create or fill templates: dataset description, participants info
 ###############################################################################
+
+
+def load_config(configFile):
+    config = yaml.safe_load(open(configFile, 'r'))
+    return config
 
 def create_dataset_description(
     path_BIDS: str='.',
@@ -987,7 +991,10 @@ def main():
         config_dict = openBidsConfigUI(file_config)
     else:
         with open(file_config, 'r') as f:
-            config_dict = json.load(f)
+            # config_dict = json.load(f)
+            config_dict = load_config(file_config)
+            project_config = config_dict.get('project', {})
+            bids_config = config_dict.get('bids', {})
 
     if config_dict:
         for key, value in config_dict.items():

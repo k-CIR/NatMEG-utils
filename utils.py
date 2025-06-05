@@ -10,6 +10,9 @@ from glob import glob
 import pandas as pd
 from os.path import exists, dirname
 import os
+import yaml
+import tkinter as tk
+import json
 
 default_output_path = '/neuro/data/local'
 noise_patterns = ['empty', 'noise', 'Empty']
@@ -94,17 +97,17 @@ def askForConfig():
             sys.exit(1)
 
     else:
-        json_name = askopenfilename(
+        file_name = askopenfilename(
             title='Select config file',
-            filetypes=[('JSON files', '*.json')],
+            filetypes=[('YAML files', '*.yml'), ('JSON files', '*.json')],
             initialdir=default_output_path)
 
-        if not json_name:
+        if not file_name:
             print('No configuration file selected. Exiting opening dialog')
             sys.exit(1)
         
-        print(f'{json_name} selected')
-        return json_name
+        print(f'{file_name} selected')
+        return file_name
 
 def extract_info_from_filename(file_name: str):
     
@@ -174,6 +177,167 @@ def extract_info_from_filename(file_name: str):
     
     return info_dict
 
+def default_config():
+    default_dict = {
+        'project': {
+            'name': '',
+            'InstitutionName': 'Karolinska Institutet',
+            'InstitutionAddress': 'Nobels vag 9, 171 77, Stockholm, Sweden',
+            'InstitutionDepartmentName': 'Department of Clinical Neuroscience (CNS)',
+            'description': 'project for MEG data',
+            'tasks': [''],
+            'squidMEG': 'neuro/data/local/',
+            'opmMEG': 'neuro/data/local/',
+            'BIDS': 'neuro/data/local/',
+            'Calibration': 'neuro/databases/sss/sss_cal.dat',
+            'Crosstalk': 'neuro/databases/ctc/ct_sparse.fif'
+            },
+        'bids': {
+            'Dataset_description': 'dataset_description.json',
+            'Participants': 'participants.tsv',
+            'Participants_mapping_file': 'participant_mapping_example.csv',
+            'Original_subjID_name': 'old_subject_id',
+            'New_subjID_name': 'new_subject_id',
+            'Original_session_name': 'old_session_id',
+            'New_session_name': 'new_session_id',
+            'Overwrite': False
+        },
+        'maxfilter': {
+            'standard_settings': {'trans_conditions': ['AudOdd',
+                'Phalanges',
+                'RSEO',
+                'RSEC'],
+            'trans_option': 'continous',
+            'merge_runs': True,
+            'empty_room_files': ['empty_room_before.fif', 'empty_room_after.fif'],
+            'sss_files': '',
+            'autobad': True,
+            'badlimit': '7',
+            'bad_channels': '',
+            'tsss_default': True,
+            'correlation': '0.98',
+            'movecomp_default': True,
+            'subjects_to_skip': ''
+            },
+        'advanced_settings': {
+            'force': False,
+            'downsample': False,
+            'downsample_factor': '4',
+            'apply_linefreq': False,
+            'linefreq_Hz': '50',
+            'maxfilter_version': '/neuro/bin/util/maxfilter',
+            'MaxFilter_commands': ''
+            }
+        }
+    }
+    return default_dict
+    # yaml.safe_dump(default_dict, open('default_config.yml', 'w'), default_flow_style=False, sort_keys=False)
+
+def openConfigUI(file_name: str = None):
+    """_summary_
+    Creates or opens a JSON file with MaxFilter parameters using a GUI.
+
+    Parameters
+    ----------
+    default_data : dict, optional
+        Default data to populate the GUI fields.
+
+    Returns
+    -------
+    None
+    
+    """
+
+    # Check if the configuration file exists and if so load
+    if not(file_name):
+        data = default_config()
+    else:
+        if file_name.endswith('.yml'):
+            with open(file_name, 'r') as f:
+                data = yaml.safe_load(f)
+        elif file_name.endswith('.json'):
+            with open(file_name, 'r') as f:
+                data = json.load(f)
+    
+    # Create default configuration file
+
+    # Create a new Tkinter window
+    root = tk.Tk()
+    root.title('BIDSify Configuration')
+    root.geometry('500x500')
+    
+    # Main frame
+    frame = tk.LabelFrame(root, text='BIDSify Configuration')
+    frame.grid(row=0, column=0,
+                ipadx=5, ipady=5, sticky='e')
+    
+    # Buttons frame
+    button_frame = tk.LabelFrame(root, text="", padx=10, pady=10, border=0)
+    button_frame.grid(row=1, column=0, columnspan=2, sticky='nsew', padx=5, pady=5)
+    
+    # Create labels and entries for each field in the configuration
+    chb = {}
+    keys = []
+    entries = []
+    for i, key in enumerate(data):
+        val = data[key]
+        
+        label = tk.Label(frame, text=key).grid(row=i, column=0, sticky='e')
+
+        if val in ['on', 'off']:
+            chb[key] = tk.StringVar()
+            chb[key].set(val)
+            check_box = tk.Checkbutton(frame,
+                                       variable=chb[key], onvalue='on', offvalue='off',
+                                       text='')
+            
+            check_box.grid(row=i, column=1, padx=2, pady=2, sticky='w')
+            entry = chb[key]
+        else:
+            entry = tk.Entry(frame, width=30)
+            entry.grid(row=i, column=1)
+            entry.insert(0, val)
+        
+        keys.append(key)
+        entries.append(entry)
+    
+    # Create buttons to save or cancel the configuration
+    def cancel():
+            root.destroy()
+            print('Closed')
+            sys.exit(1)
+
+    def save():
+        data = {}
+
+        for key, entry in zip(keys, entries):
+            if ', ' in entry.get():
+                data[key] = [x.strip() for x in entry.get().split(', ') if x.strip()]
+            else:
+                data[key] = entry.get()
+            
+        # Replace with save data
+        save_path = asksaveasfile(defaultextension=".json", filetypes=[("JSON files", "*.json")],
+                                  initialdir='/neuro/data/local')
+        if save_path:
+            with open(save_path.name, 'w') as f:
+                json.dump(data, f, indent=4, default=list)
+            print(f"Settings saved to {save_path.name}")
+
+        root.destroy()
+        print(f'Saving BIDS parameters to {json_name}')
+
+    save_button = tk.Button(button_frame,
+                            text="Save", command=save)
+    save_button.grid(row=0, column=0)
+
+    cancel_button = tk.Button(button_frame,
+                            text="Cancel", command=cancel)
+    cancel_button.grid(row=0, column=2)
+
+    # Start GUI loop
+    root.mainloop()
+    return data
 
 #### Not in use ####
 def get_desc_from_raw(file_name):
