@@ -13,8 +13,10 @@ import os
 import yaml
 import tkinter as tk
 import json
+import tempfile
+import subprocess
 
-default_output_path = '/neuro/data/local'
+default_output_path = 'neuro/data/local'
 noise_patterns = ['empty', 'noise', 'Empty']
 proc_patterns = ['tsss', 'sss', r'corr\d+', r'ds\d+', 'mc', 'avgHead']
 headpos_patterns = ['trans', 'headpos']
@@ -177,15 +179,16 @@ def extract_info_from_filename(file_name: str):
     
     return info_dict
 
-def default_config():
+
+def create_default_config():
     default_dict = {
         'project': {
-            'name': '',
+            'name': None,
             'InstitutionName': 'Karolinska Institutet',
             'InstitutionAddress': 'Nobels vag 9, 171 77, Stockholm, Sweden',
             'InstitutionDepartmentName': 'Department of Clinical Neuroscience (CNS)',
             'description': 'project for MEG data',
-            'tasks': [''],
+            'tasks': None,
             'squidMEG': 'neuro/data/local/',
             'opmMEG': 'neuro/data/local/',
             'BIDS': 'neuro/data/local/',
@@ -203,10 +206,8 @@ def default_config():
             'Overwrite': False
         },
         'maxfilter': {
-            'standard_settings': {'trans_conditions': ['AudOdd',
-                'Phalanges',
-                'RSEO',
-                'RSEC'],
+            'standard_settings': {
+                'trans_conditions': [''],
             'trans_option': 'continous',
             'merge_runs': True,
             'empty_room_files': ['empty_room_before.fif', 'empty_room_after.fif'],
@@ -230,116 +231,274 @@ def default_config():
             }
         }
     }
-    return default_dict
-    # yaml.safe_dump(default_dict, open('default_config.yml', 'w'), default_flow_style=False, sort_keys=False)
 
-def openConfigUI(file_name: str = None):
-    """_summary_
+    return default_dict
+
+def open_config_file(file_config: str=None):
+    # Open default_dict in a Tkinter text editor as a YAML file
+    
+    if not file_config:
+        default_dict = create_default_config()
+    else:
+        if file_config.endswith('.yml'):
+            with open(file_config, 'r') as f:
+                default_dict = yaml.safe_load(f)
+        elif file_config.endswith('.json'):
+            with open(file_config, 'r') as f:
+                default_dict = json.load(f)
+        else:
+            raise ValueError("Unsupported file format. Please provide a YAML or JSON file.")
+
+    root = tk.Tk()
+    root.title("Edit Default Config (YAML)")
+
+    text = tk.Text(root, wrap='word', width=100, height=40)
+    text.pack(expand=True, fill='both')
+
+    # Insert YAML dump of default_dict
+    yaml_str = yaml.dump(default_dict, default_flow_style=False, sort_keys=False)
+    text.insert('1.0', yaml_str)
+
+    # Define result in the enclosing function scope so nonlocal works
+    result = None
+
+    def save_and_close():
+        
+        nonlocal result
+        result = yaml.safe_load(text.get('1.0', 'end'))
+        file = asksaveasfile(
+                initialdir=default_output_path,
+                defaultextension='.yml',
+                filetypes=[('YAML files', '*.yml')],
+                title='Save default config file as',
+                initialfile='default_config.yml'
+                    )
+        if file:
+            yaml.dump(result, file, default_flow_style=False, sort_keys=False)
+            file.close()
+        root.destroy()
+        print('Saved and closed')
+
+    def cancel_and_close():
+        root.destroy()
+        print('Closed')
+        sys.exit(1)
+
+    btn_frame = tk.Frame(root)
+    btn_frame.pack(fill='x', pady=5)
+    save_btn = tk.Button(btn_frame, text="Save", command=save_and_close)
+    save_btn.pack(side='left', padx=10)
+    cancel_btn = tk.Button(btn_frame, text="Cancel", command=cancel_and_close)
+    cancel_btn.pack(side='left', padx=10)
+
+    root.mainloop()
+    return result
+
+def OpenConfigUI(config_file: str = None):
+    """
     Creates or opens a JSON file with MaxFilter parameters using a GUI.
 
     Parameters
     ----------
-    default_data : dict, optional
+    data : dict, optional
         Default data to populate the GUI fields.
 
     Returns
     -------
-    None
-    
+    data : dict
     """
-
-    # Check if the configuration file exists and if so load
-    if not(file_name):
-        data = default_config()
+    if not config_file:
+        data_dict = create_default_config()
     else:
-        if file_name.endswith('.yml'):
-            with open(file_name, 'r') as f:
-                data = yaml.safe_load(f)
-        elif file_name.endswith('.json'):
-            with open(file_name, 'r') as f:
-                data = json.load(f)
-    
-    # Create default configuration file
-
-    # Create a new Tkinter window
-    root = tk.Tk()
-    root.title('BIDSify Configuration')
-    root.geometry('500x500')
-    
-    # Main frame
-    frame = tk.LabelFrame(root, text='BIDSify Configuration')
-    frame.grid(row=0, column=0,
-                ipadx=5, ipady=5, sticky='e')
-    
-    # Buttons frame
-    button_frame = tk.LabelFrame(root, text="", padx=10, pady=10, border=0)
-    button_frame.grid(row=1, column=0, columnspan=2, sticky='nsew', padx=5, pady=5)
-    
-    # Create labels and entries for each field in the configuration
-    chb = {}
-    keys = []
-    entries = []
-    for i, key in enumerate(data):
-        val = data[key]
-        
-        label = tk.Label(frame, text=key).grid(row=i, column=0, sticky='e')
-
-        if val in ['on', 'off']:
-            chb[key] = tk.StringVar()
-            chb[key].set(val)
-            check_box = tk.Checkbutton(frame,
-                                       variable=chb[key], onvalue='on', offvalue='off',
-                                       text='')
-            
-            check_box.grid(row=i, column=1, padx=2, pady=2, sticky='w')
-            entry = chb[key]
+        if config_file.endswith('.yml'):
+            with open(config_file, 'r') as f:
+                data_dict = yaml.safe_load(f)
+        elif config_file.endswith('.json'):
+            with open(config_file, 'r') as f:
+                data_dict = json.load(f)
         else:
-            entry = tk.Entry(frame, width=30)
-            entry.grid(row=i, column=1)
-            entry.insert(0, val)
-        
-        keys.append(key)
-        entries.append(entry)
+            raise ValueError("Unsupported file format. Please provide a YAML or JSON file.")
     
-    # Create buttons to save or cancel the configuration
-    def cancel():
-            root.destroy()
-            print('Closed')
-            sys.exit(1)
+    project_config = data_dict.get('project', {})
+    bids_config = data_dict.get('bids', {})
+    maxfilter_config = data_dict.get('maxfilter', {})
+    
+    standard_settings = maxfilter_config['standard_settings']
+    advanced_settings = maxfilter_config['advanced_settings']
+
+    # Create main window
+    root = tk.Tk()
+    root.eval('tk::PlaceWindow . center')
+    root.title("MaxFilter Settings")
+    
+    
+    prj_frame = tk.LabelFrame(root, text="Project Settings", padx=20, pady=20, border=2)
+    prj_frame.grid(row=0, column=0, ipadx=5, ipady=5, sticky='ns')
+    
+    entries = {}
+    for i, key, value in project_config.items():
+        label = tk.Label(prj_frame, text=key)
+        label.grid(row=i, column=0, sticky="e", padx=2, pady=2)
+        
+        if isinstance(value, list):
+                value = ', '.join(value)
+        entry = tk.Entry(std_frame, width=40)
+        entry.insert(0, value)
+        entry.grid(row=i, column=1, padx=2, pady=2)
+        result = entry
+    entries[key] = result
+    
+    bids_frame = tk.LabelFrame(root, text="Project Settings", padx=20, pady=20, border=2)
+    bids_frame.grid(row=1, column=0, ipadx=5, ipady=5, sticky='ns')
+    
+    entries = {}
+    for i, key, value in project_config.items():
+        label = tk.Label(bids_frame, text=key)
+        label.grid(row=i, column=0, sticky="e", padx=2, pady=2)
+
+        if isinstance(value, list):
+                value = ', '.join(value)
+        if 'DatasetDOI' in key:
+            if 'doi:' not in value:
+                value = 'doi:' + value
+        entry = tk.Entry(std_frame, width=40)
+        entry.insert(0, value)
+        entry.grid(row=i, column=1, padx=2, pady=2)
+        result = entry
+    entries[key] = result
+        
+
+    # Create standard settings section
+    std_frame = tk.LabelFrame(root, text="Standard Settings", padx=20, pady=20, border=2)
+    std_frame.grid(row=2, column=0, ipadx=5, ipady=5, sticky='ns')
+    
+    std_chb = {}
+    std_entries = {}
+    for i, (key, value) in enumerate(standard_settings.items()):
+        
+        label = tk.Label(std_frame, text=key)
+        label.grid(row=i, column=0, sticky="e", padx=2, pady=2)
+        
+        if key == 'trans_option':
+            print(i, key, value)
+            selected_option = tk.StringVar()
+
+            options = [value] + list(
+                {'continous', 'initial'} - {value})
+            entry = tk.OptionMenu(std_frame, selected_option, *options)
+            entry.grid(row=i, column=1, padx=2, pady=2, sticky='w')
+            selected_option.set(options[0])
+            result = selected_option
+        
+        elif value in ['on', 'off']:
+            std_chb[key] = tk.StringVar()
+            std_chb[key].set(value)
+            check_box = tk.Checkbutton(std_frame,
+                                    variable=std_chb[key], onvalue='on', offvalue='off',
+                                    text='')
+
+            check_box.grid(row=i, column=1, padx=2, pady=2, sticky='w')
+            result = std_chb[key]
+        
+        else:
+            if isinstance(value, list):
+                value = ', '.join(value)
+            entry = tk.Entry(std_frame, width=40)
+            entry.insert(0, value)
+            entry.grid(row=i, column=1, padx=2, pady=2)
+            result = entry
+        
+        std_entries[key] = result
+
+    # Create advanced settings section
+    adv_frame = tk.LabelFrame(root, text="Advanced Settings", padx=20, pady=20, border=2)
+
+    adv_chb = {}
+    adv_entries = {}
+    for i, (key, value) in enumerate(advanced_settings.items()):
+        label = tk.Label(adv_frame, text=key)
+        label.grid(row=i, column=0, sticky="e", padx=2, pady=2)
+        
+        if key == 'maxfilter_version':
+            selected_option = tk.StringVar()
+            # options = ['/neuro/bin/util/maxfilter', '/neuro/bin/util/mfilter']
+            # WARNING. mfiler is a new experimental version, seems to find extremly many bad channels
+            options = options = [value] + list(
+                {'/neuro/bin/util/maxfilter', '/neuro/bin/util/mfilter'} - {value})
+            entry = tk.OptionMenu(adv_frame, selected_option, *options)
+            entry.grid(row=i, column=1, padx=2, pady=2, sticky='w')
+            selected_option.set(options[0])
+            adv_entries[key] = selected_option
+        
+        elif value in ['on', 'off']:
+            adv_chb[key] = tk.StringVar()
+            adv_chb[key].set(value)
+            check_box = tk.Checkbutton(adv_frame,
+                                    variable=adv_chb[key], onvalue='on', offvalue='off',
+                                    text='')
+            check_box.grid(row=i, column=1, padx=2, pady=2, sticky='w')
+            adv_entries[key] = adv_chb[key]
+            
+        else:
+            if isinstance(value, list):
+                value = ', '.join(value)
+
+            entry = tk.Entry(adv_frame, width=40)
+            entry.insert(0, value)
+            entry.grid(row=i, column=1, padx=2, pady=2)
+            adv_entries[key] = entry
+
+    # Buttons frame
+    button_frame = tk.Frame(root, padx=10, pady=10)
+    button_frame.grid(row=3, column=0, columnspan=2, sticky='nsew', padx=5, pady=5)
+
+    def toggle_advanced():
+        if adv_frame.winfo_ismapped():
+            adv_frame.grid_forget()
+            toggle_button.config(text="Show Advanced Settings")
+        else:
+            adv_frame.grid(row=2, column=1, ipadx=5, ipady=5, sticky='ns')
+            toggle_button.config(text="Hide Advanced Settings")
 
     def save():
-        data = {}
+        for key, entry in std_entries.items():
+            value = entry.get()
+            std_entries[key] = value.split(', ') if ', ' in value else value
+        for key, entry in adv_entries.items():
+            value = entry.get()
+            adv_entries[key] = value.split(', ') if ', ' in value else value
+        
+        data_dict['maxfilter']['standard_settings'] = std_entries
+        data_dict['maxfilter']['advanced_settings'] = adv_entries
 
-        for key, entry in zip(keys, entries):
-            if ', ' in entry.get():
-                data[key] = [x.strip() for x in entry.get().split(', ') if x.strip()]
-            else:
-                data[key] = entry.get()
-            
-        # Replace with save data
         save_path = asksaveasfile(defaultextension=".json", filetypes=[("JSON files", "*.json")],
-                                  initialdir='/neuro/data/local')
+                                  initialdir=default_output_path)
         if save_path:
             with open(save_path.name, 'w') as f:
-                json.dump(data, f, indent=4, default=list)
+                json.dump(data_dict, f, indent=4)
             print(f"Settings saved to {save_path.name}")
-
         root.destroy()
-        print(f'Saving BIDS parameters to {json_name}')
 
-    save_button = tk.Button(button_frame,
-                            text="Save", command=save)
-    save_button.grid(row=0, column=0)
+    def cancel():
+        root.destroy()
+        print("Operation canceled.")
+        sys.exit(1)
 
-    cancel_button = tk.Button(button_frame,
-                            text="Cancel", command=cancel)
-    cancel_button.grid(row=0, column=2)
+    save_button = tk.Button(button_frame, text="Save & Run", command=save)
+    save_button.grid(row=0, column=0, padx=5, pady=5)
+
+    toggle_button = tk.Button(button_frame, text="Show Advanced Settings", command=toggle_advanced)
+    toggle_button.grid(row=0, column=1, padx=5, pady=5)
+
+    cancel_button = tk.Button(button_frame, text="Cancel", command=cancel)
+    cancel_button.grid(row=0, column=2, padx=5, pady=5)
 
     # Start GUI loop
     root.mainloop()
-    return data
+    return data_dict
 
-#### Not in use ####
+
+#### Not in use ##################################################
 def get_desc_from_raw(file_name):
     info = mne.io.read_info(file_name, verbose='error')
     

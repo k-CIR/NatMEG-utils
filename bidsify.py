@@ -34,6 +34,7 @@ import mne
 
 from utils import (
     log,
+    open_config_file,
     noise_patterns,
     headpos_patterns,
     askForConfig,
@@ -986,9 +987,10 @@ def main():
     # Select BIDS configuration file dialog
     
     if file_config == 'new':
-        config_dict = openBidsConfigUI()
+        # config_dict = openBidsConfigUI()
+        config_dict = open_config_file()
     elif file_config != 'new' and args.edit:
-        config_dict = openBidsConfigUI(file_config)
+        config_dict = open_config_file(file_config)
     else:
         with open(file_config, 'r') as f:
             # config_dict = json.load(f)
