@@ -11,10 +11,11 @@ from typing import Union
 from datetime import datetime
 import filecmp
 import pandas as pd
+from database_integration import ProcessingTracker
 
-sinuhe_root = 'neuro/data/sinuhe'
-kaptah_root = 'neuro/data/kaptah'
-local_root = 'neuro/data/local'
+sinuhe_root = '/neuro/data/sinuhe'
+kaptah_root = '/neuro/data/kaptah'
+local_root = '/neuro/data/local'
 
 from utils import (
     log, configure_logging,
@@ -23,6 +24,9 @@ from utils import (
     file_contains,
     askForConfig
 )
+
+tracker = ProcessingTracker()
+
 
 global local_dir
 
@@ -112,6 +116,7 @@ def copy_from_sinuhe(config, check_existing=False):
     local_dir = config['squidMEG']
     if not os.path.exists(local_dir):
         os.makedirs(local_dir, exist_ok=True)
+
 
     # Create log directory in the project root (parent of local_dir)
     project_root = os.path.dirname(local_dir)
