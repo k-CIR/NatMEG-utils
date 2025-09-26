@@ -275,8 +275,21 @@ def extract_info_from_filename(file_name: str):
     """
     
     # Extract participant, task, processing, datatypes and extension
-    participant = re.search(r'(NatMEG_|sub-)(\d+)', file_name).group(2).zfill(4)
-    extension = '.' + re.search(r'\.(.*)', file_name).group(1)
+    participant_match = re.search(r'(NatMEG_|sub-)(\d+)', file_name)
+    if participant_match:
+        participant = participant_match.group(2).zfill(4)
+    else:
+        # Fallback: try to extract any number sequence or use 'unknown'
+        number_match = re.search(r'(\d{3,4})', file_name)
+        participant = number_match.group(1).zfill(4) if number_match else 'unknown'
+    
+    extension_match = re.search(r'\.(.*)$', file_name)
+    if extension_match:
+        extension = '.' + extension_match.group(1)
+    else:
+        # No extension found - might be a directory or file without extension
+        extension = ''
+    
     datatypes = list(set([r.lower() for r in re.findall(r'(meg|raw|opm|eeg|behav)', basename(file_name), re.IGNORECASE)] +
                          ['opm' if 'kaptah' in file_name else '']))
     datatypes = [d for d in datatypes if d != '']
@@ -284,8 +297,8 @@ def extract_info_from_filename(file_name: str):
     proc = re.findall('|'.join(proc_patterns), basename(file_name))
     desc = re.findall('|'.join(headpos_patterns), basename(file_name))
 
-    split = re.search(r'(\-\d+\.fif)', basename(file_name))
-    split = split.group(1).strip('.fif') if split else ''
+    split_match = re.search(r'(\-\d+\.fif)', basename(file_name))
+    split = split_match.group(1).strip('.fif') if split_match else ''
     
     exclude_from_task = '|'.join(['NatMEG_'] + ['sub-'] + ['proc']+ datatypes + [participant] + [extension] + proc + [split] + ['\\+'] + ['\\-'] + desc)
     
@@ -307,12 +320,19 @@ def extract_info_from_filename(file_name: str):
     task = [t for t in task.split('_') if t]
     if len(task) > 1:
         task = ''.join([t.title() for t in task])
-    else:
+    elif len(task) == 1:
         task = task[0]
+    else:
+        # No task extracted, use a fallback based on filename
+        task = 'unknown'
 
     if file_contains(task, noise_patterns):
         try:
-            task = f'Noise{re.search("before|after", task.lower()).group().title()}'
+            match = re.search("before|after", task.lower())
+            if match:
+                task = f'Noise{match.group().title()}'
+            else:
+                task = 'Noise'
         except:
             task = 'Noise'
 

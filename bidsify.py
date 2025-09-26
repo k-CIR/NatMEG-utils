@@ -44,6 +44,14 @@ from utils import (
     opm_exceptions_patterns
 )
 
+# Import unified pipeline tracking
+try:
+    from pipeline_tracker import get_project_tracker, track_file_operation, PipelineStage, FileStatus
+    PIPELINE_TRACKING_AVAILABLE = True
+except ImportError:
+    PIPELINE_TRACKING_AVAILABLE = False
+    print("Pipeline tracking not available - running in legacy mode")
+
 ###############################################################################
 # Variables
 ###############################################################################
@@ -759,7 +767,16 @@ def bidsify(config: dict):
     logpath = join(config.get('Root', ''), config.get('Name', ''), 'logs')
 
     configure_logging(log_dir=logpath, log_file=logfile)
-    # overwrite = config['Overwrite']
+    
+    # Initialize pipeline tracker if available
+    tracker = None
+    if PIPELINE_TRACKING_AVAILABLE:
+        try:
+            project_root = join(config.get('Root', ''), config.get('Name', ''))
+            tracker = get_project_tracker(project_root, config)
+            log('BIDS', 'Pipeline tracking initialized for BIDS conversion', logfile=logfile, logpath=logpath)
+        except Exception as e:
+            log('BIDS', f'Failed to initialize pipeline tracker: {e}', 'warning', logfile=logfile, logpath=logpath)
 
     df, conversion_file = load_conversion_table(config)
     #df = update_conversion_table(df, conversion_file)
@@ -888,6 +905,23 @@ def bidsify(config: dict):
                     overwrite=True,
                     verbose='error'
                 )
+                
+                # Track successful BIDS conversion
+                if tracker and PIPELINE_TRACKING_AVAILABLE:
+                    try:
+                        metadata = {
+                            'bids_path': str(bids_path.fpath),
+                            'participant': subject,
+                            'session': session,
+                            'task': task,
+                            'acquisition': acquisition,
+                            'datatype': datatype
+                        }
+                        track_file_operation(tracker, 'bidsify', raw_file, True, metadata)
+                    except Exception as track_e:
+                        log('BIDS', f'Failed to track BIDS conversion for {raw_file}: {track_e}', 
+                            'warning', logfile=logfile, logpath=logpath)
+                        
             except Exception as e:
                 print(f"Error writing BIDS file: {e}")
                 # If write_raw_bids fails, try to save the raw file directly
