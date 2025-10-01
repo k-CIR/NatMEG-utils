@@ -510,37 +510,47 @@ def update_copy_report(results, config):
             existing_entries.add((entry['Original File'], entry.get('New file(s)', '')))
     
     # Process new results and add only non-duplicates
-    new_entries = []
+    # Group results by source file to handle multiple destinations correctly
+    source_groups = {}
     for res in results:
         source_file = res[1]
         dest_files = res[2]
         
+        if source_file not in source_groups:
+            source_groups[source_file] = {
+                'success': res[0],
+                'message': res[3],
+                'destinations': []
+            }
+        
         # Handle both single files and lists of files (for split .fif files)
         if isinstance(dest_files, list):
-            # For split files, check each destination file
-            for dest_file in dest_files:
-                if (source_file, dest_file) not in existing_entries:
-                    new_entries.append({
-                        'Original File': source_file,
-                        'Copy Date': datetime.fromtimestamp(os.path.getctime(source_file)).strftime('%y%m%d'),
-                        'Copy Time': datetime.fromtimestamp(os.path.getctime(source_file)).strftime('%H%M%S'),
-                        'New file(s)': dest_file,
-                        'Transfer status': 'Success' if res[0] else 'Failed',
-                        'message': res[3],
-                        'timestamp': datetime.now().isoformat()
-                    })
+            source_groups[source_file]['destinations'].extend(dest_files)
         else:
-            # For single files
-            if (source_file, dest_files) not in existing_entries:
-                new_entries.append({
-                    'Original File': source_file,
-                    'Copy Date': datetime.fromtimestamp(os.path.getctime(source_file)).strftime('%y%m%d'),
-                    'Copy Time': datetime.fromtimestamp(os.path.getctime(source_file)).strftime('%H%M%S'),
-                    'New file(s)': dest_files,
-                    'Transfer status': 'Success' if res[0] else 'Failed',
-                    'message': res[3],
-                    'timestamp': datetime.now().isoformat()
-                })
+            source_groups[source_file]['destinations'].append(dest_files)
+    
+    new_entries = []
+    for source_file, group_info in source_groups.items():
+        # Filter out destinations that already exist in the report
+        new_destinations = []
+        for dest_file in group_info['destinations']:
+            if (source_file, dest_file) not in existing_entries:
+                new_destinations.append(dest_file)
+        
+        # Only create an entry if there are new destinations
+        if new_destinations:
+            # Create entry with list of destinations if multiple, single string if only one
+            dest_value = new_destinations if len(new_destinations) > 1 else new_destinations[0]
+            
+            new_entries.append({
+                'Original File': source_file,
+                'Copy Date': datetime.fromtimestamp(os.path.getctime(source_file)).strftime('%y%m%d'),
+                'Copy Time': datetime.fromtimestamp(os.path.getctime(source_file)).strftime('%H%M%S'),
+                'New file(s)': dest_value,
+                'Transfer status': 'Success' if group_info['success'] else 'Failed',
+                'message': group_info['message'],
+                'timestamp': datetime.now().isoformat()
+            })
     
     # Combine existing and new entries
     updated_report = existing_report + new_entries
