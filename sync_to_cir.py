@@ -12,7 +12,7 @@ import json
 import subprocess
 import shlex
 from pathlib import Path
-from os.path import dirname, abspath, exists, isdir
+from os.path import dirname, abspath, exists, isdir, getsize, join
 from datetime import datetime
 from typing import Dict, List, Optional, Union
 from copy import deepcopy
@@ -55,6 +55,100 @@ class ServerSync:
                 raise ValueError(f"Missing required field '{field}' in server config for '{server_name}'")
         
         return server_config
+    
+    def update_sync_report(self, local_path: str, server_name: str, success: bool, 
+                          files_synced: List[str], message: str = "") -> int:
+        """
+        Update the sync results report with new entries, avoiding duplicates.
+        
+        Args:
+            local_path: Local directory path that was synced
+            server_name: Target server name
+            success: Whether sync was successful
+            files_synced: List of files that were synced
+            message: Status message from sync operation
+        
+        Returns:
+            int: Number of new entries added to the report
+        """
+        # Find project root and log directory
+        project_root = local_path
+        while project_root and not exists(join(project_root, 'log')):
+            parent = dirname(project_root)
+            if parent == project_root:  # Reached filesystem root
+                break
+            project_root = parent
+        
+        log_path = join(project_root, 'log')
+        if not exists(log_path):
+            os.makedirs(log_path, exist_ok=True)
+        
+        report_file = f'{log_path}/sync_results.json'
+        
+        # Load existing report if it exists
+        existing_report = []
+        if exists(report_file):
+            try:
+                with open(report_file, 'r') as f:
+                    existing_report = json.load(f)
+            except (json.JSONDecodeError, FileNotFoundError):
+                existing_report = []
+        
+        # Create a set of existing entries for duplicate detection
+        existing_entries = set()
+        for entry in existing_report:
+            existing_entries.add((entry.get('Local Path', ''), entry.get('Server', ''), 
+                                 entry.get('Sync Date', '')))
+        
+        # Create new entry
+        sync_date = datetime.now().strftime('%y%m%d')
+        sync_time = datetime.now().strftime('%H%M%S')
+        
+        # Calculate directory size
+        total_size = 0
+        file_count = 0
+        if exists(local_path):
+            for root, dirs, files in os.walk(local_path):
+                for file in files:
+                    file_path = join(root, file)
+                    try:
+                        total_size += getsize(file_path)
+                        file_count += 1
+                    except (OSError, FileNotFoundError):
+                        pass
+        
+        # Check if this sync session is already in the report
+        entry_key = (local_path, server_name, sync_date)
+        if entry_key not in existing_entries:
+            new_entry = {
+                'Local Path': local_path,
+                'Server': server_name,
+                'Sync Date': sync_date,
+                'Sync Time': sync_time,
+                'Files Count': file_count,
+                'Total Size': total_size,
+                'Files Synced': len(files_synced),
+                'Sync Status': 'Success' if success else 'Failed',
+                'status': message or ('Completed successfully' if success else 'Sync failed'),
+                'timestamp': datetime.now().isoformat()
+            }
+            
+            # Add to existing report
+            updated_report = existing_report + [new_entry]
+            
+            # Write updated report back to file
+            with open(report_file, 'w') as f:
+                json.dump(updated_report, f, indent=4)
+            
+            # Log summary
+            log(f'Sync report updated: 1 new entry added to existing {len(existing_report)} entries',
+                'info', logfile=self.log_file, logpath=log_path)
+            
+            return 1
+        else:
+            log('Sync entry already exists in report', 'info', 
+                logfile=self.log_file, logpath=log_path)
+            return 0
     
     def get_local_path(self, path: str = None) -> str:
         """Get local path for syncing"""
@@ -182,9 +276,26 @@ class ServerSync:
                 log(f"Rsync errors:\n{result.stderr}", 'warning',
                     logfile=self.log_file, logpath=log_path)
             
+            # Parse synced files from rsync output
+            synced_files = []
+            if result.stdout:
+                import re
+                lines = result.stdout.strip().split('\n')
+                for line in lines:
+                    match = re.match(r'^[><]f[\+\.\s]*\s+(.+)$', line.strip())
+                    if match:
+                        synced_files.append(match.group(1))
+            
             if result.returncode == 0:
                 log(f"Successfully synced {local_path} to {server_name}", 'info',
                     logfile=self.log_file, logpath=log_path)
+                
+                # Update sync report (only if not dry run)
+                if not dry_run:
+                    self.update_sync_report(
+                        local_path, server_name, True, synced_files,
+                        f"Sync completed successfully - {len(synced_files)} files transferred"
+                    )
                 
                 # If delete flag is set and sync was successful, delete local files
                 if delete and not dry_run:
@@ -194,6 +305,12 @@ class ServerSync:
             else:
                 log(f"Rsync failed with return code {result.returncode}", 'error',
                     logfile=self.log_file, logpath=log_path)
+                
+                # Update sync report with failure (only if not dry run)
+                if not dry_run:
+                    error_msg = result.stderr or f"Rsync failed with return code {result.returncode}"
+                    self.update_sync_report(local_path, server_name, False, [], error_msg)
+                
                 return False
                 
         except Exception as e:

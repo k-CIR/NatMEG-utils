@@ -542,13 +542,41 @@ def update_copy_report(results, config):
             # Create entry with list of destinations if multiple, single string if only one
             dest_value = new_destinations if len(new_destinations) > 1 else new_destinations[0]
             
+            # Get file sizes
+            original_size = None
+            if exists(source_file):
+                try:
+                    original_size = getsize(source_file)
+                except (OSError, FileNotFoundError):
+                    original_size = None
+            
+            # Calculate destination file sizes
+            dest_sizes = []
+            total_dest_size = 0
+            for dest_file in new_destinations:
+                if exists(dest_file):
+                    try:
+                        dest_size = getsize(dest_file)
+                        dest_sizes.append(dest_size)
+                        total_dest_size += dest_size
+                    except (OSError, FileNotFoundError):
+                        dest_sizes.append(None)
+                else:
+                    dest_sizes.append(None)
+            
+            # Prepare size values (single value or list matching destination structure)
+            dest_size_value = dest_sizes if len(dest_sizes) > 1 else (dest_sizes[0] if dest_sizes else None)
+            
             new_entries.append({
                 'Original File': source_file,
                 'Copy Date': datetime.fromtimestamp(os.path.getctime(source_file)).strftime('%y%m%d'),
                 'Copy Time': datetime.fromtimestamp(os.path.getctime(source_file)).strftime('%H%M%S'),
                 'New file(s)': dest_value,
-                'Transfer status': 'Success' if group_info['success'] else 'Failed',
-                'message': group_info['message'],
+                'Original Size': original_size,
+                'Destination Size(s)': dest_size_value,
+                'Total Destination Size': total_dest_size,
+                'Transfer Status': 'Success' if group_info['success'] else 'Failed',
+                'status': group_info['message'],  # Standardized field name for filtering
                 'timestamp': datetime.now().isoformat()
             })
     

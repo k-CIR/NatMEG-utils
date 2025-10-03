@@ -5,7 +5,7 @@ import yaml
 import os
 from shutil import copy2
 from copy import deepcopy
-from os.path import exists, basename, dirname, join
+from os.path import exists, basename, dirname, join, getsize
 import sys
 from glob import glob
 import numpy as np
@@ -591,7 +591,7 @@ def generate_new_conversion_table(config: dict):
     df = pd.DataFrame(results)
 
     if not df.empty:
-        df.insert(2, 'task_flag', df.apply(
+        df.insert(2, 'status', df.apply(
             lambda x: 'check' if x['task'] not in tasks + ['Noise'] else 'ok', axis=1))
             # Added Noise to accepted task patterns
     else:
@@ -599,7 +599,7 @@ def generate_new_conversion_table(config: dict):
             'time_stamp', 'run_conversion', 'participant_from', 'participant_to',
             'session_from', 'session_to', 'task', 'split', 'run', 'datatype',
             'acquisition', 'processing', 'description', 'raw_path', 'raw_name',
-            'bids_path', 'bids_name', 'event_id', 'task_flag'
+            'bids_path', 'bids_name', 'event_id', 'status'
         ])
 
     os.makedirs(f'{path_BIDS}/conversion_logs', exist_ok=True)
@@ -712,6 +712,93 @@ def update_conversion_table(conversion_table: pd.DataFrame,
     conversion_table.to_csv(f'{conversion_file}', sep='\t', index=False)
     return conversion_table
 
+def update_bids_report(conversion_table: pd.DataFrame, config: dict):
+    """
+    Update the BIDS results report with processed entries in JSON format, 
+    linking to the copy results for complete pipeline tracking.
+    
+    Creates a JSON report similar to copy_results.json but for BIDS conversions,
+    allowing tracking of the complete pipeline from copy → BIDS.
+    
+    Args:
+        conversion_table (pd.DataFrame): Conversion table with BIDS processing results
+        config (dict): Configuration dictionary containing project paths
+    
+    Returns:
+        int: Number of entries processed
+    """
+    project_root = join(config.get('Root', ''), config.get('Name', ''))
+    log_path = join(project_root, 'log')
+    report_file = f'{log_path}/bids_results.json'
+    
+    # Load existing report if it exists
+    existing_report = []
+    if exists(report_file):
+        try:
+            with open(report_file, 'r') as f:
+                existing_report = json.load(f)
+        except (json.JSONDecodeError, FileNotFoundError):
+            existing_report = []
+    
+    # Create a set of existing entries for duplicate detection
+    existing_entries = set()
+    for entry in existing_report:
+        existing_entries.add((entry['Source File'], entry['BIDS File']))
+    
+    # Process conversion table entries
+    new_entries = []
+    for _, row in conversion_table.iterrows():
+        source_file = f"{row['raw_path']}/{row['raw_name']}"
+        bids_file = f"{row['bids_path']}/{row['bids_name']}"
+        
+        # Only add if not already in report
+        if (source_file, bids_file) not in existing_entries:
+            # Get file sizes
+            source_size = None
+            if exists(source_file):
+                try:
+                    source_size = getsize(source_file)
+                except (OSError, FileNotFoundError):
+                    source_size = None
+            
+            bids_size = None
+            if exists(bids_file):
+                try:
+                    bids_size = getsize(bids_file)
+                except (OSError, FileNotFoundError):
+                    bids_size = None
+            
+            new_entries.append({
+                'Source File': source_file,
+                'Processing Date': row['time_stamp'],
+                'BIDS File': bids_file,
+                'Source Size': source_size,
+                'BIDS Size': bids_size,
+                'Participant': row['participant_to'],
+                'Session': row['session_to'], 
+                'Task': row['task'],
+                'Acquisition': row['acquisition'],
+                'Datatype': row['datatype'],
+                'Processing': row['processing'] if row['processing'] else None,
+                'Conversion Status': 'Success' if row['run_conversion'] == 'no' else 'Pending',
+                'timestamp': datetime.now().isoformat()
+            })
+    
+    # Combine existing and new entries
+    updated_report = existing_report + new_entries
+    
+    # Write updated report back to file
+    with open(report_file, 'w') as f:
+        json.dump(updated_report, f, indent=4)
+    
+    # Log summary
+    logfile = config.get('Logfile', 'bidsify.log')
+    logpath = join(config.get('Root', ''), config.get('Name', ''), 'logs')
+    log('BIDS', f'BIDS report updated: {len(new_entries)} new entries added to existing {len(existing_report)} entries',
+        logfile=logfile, logpath=logpath)
+    
+    return len(new_entries)
+
         
 def bidsify(config: dict):
     """
@@ -819,7 +906,7 @@ def bidsify(config: dict):
     df = df[df['split'].isna()]
 
     # Flag deviants and exist if found
-    deviants = df[df['task_flag'] == 'check']
+    deviants = df[df['status'] == 'check']
     if len(deviants) > 0:
         log('BIDS', 'Deviants found, please check the conversion table and run again', level='warning', logfile=logfile, logpath=logpath)
         return
@@ -980,6 +1067,10 @@ def bidsify(config: dict):
 
     # Save updated conversion table
     update_conversion_table(df, conversion_file)
+    
+    # Update BIDS processing report in JSON format for pipeline tracking
+    update_bids_report(df, config)
+    
     log('BIDS', f'All files bidsified according to {conversion_file}', level='info', logfile=logfile, logpath=logpath)
     # df.to_csv(f'{path_BIDS}/conversion_logs/bids_conversion.tsv', sep='\t', index=False)
     
