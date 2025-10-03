@@ -29,13 +29,7 @@ from utils import (
     askForConfig
 )
 
-# Import unified pipeline tracking
-try:
-    from pipeline_tracker import get_project_tracker, track_file_operation, PipelineStage, FileStatus
-    PIPELINE_TRACKING_AVAILABLE = True
-except ImportError:
-    PIPELINE_TRACKING_AVAILABLE = False
-    print("Pipeline tracking not available - running in legacy mode")
+# Pipeline tracking removed - using simple JSON logging
 
 global local_dir
 
@@ -386,14 +380,7 @@ def parallel_copy_files(config, max_workers=4):
     log_path = join(project_root, 'log')
     logfile = config.get('Logfile', 'pipeline_log.log')
     
-    # Initialize pipeline tracker if available
-    tracker = None
-    if PIPELINE_TRACKING_AVAILABLE:
-        try:
-            tracker = get_project_tracker(project_root, config)
-            log('Copy', 'Pipeline tracking initialized', logfile=logfile, logpath=log_path)
-        except Exception as e:
-            log('Copy', f'Failed to initialize pipeline tracker: {e}', 'warning', logfile=logfile, logpath=log_path)
+    # Pipeline tracking removed - using simple JSON logging
     
     results = []
     successful_copies = 0
@@ -418,19 +405,7 @@ def parallel_copy_files(config, max_workers=4):
                 success, source, destination, message = future.result()
                 results.append((success, source, destination, message))
 
-                # Track the operation in the pipeline tracking system
-                if tracker and PIPELINE_TRACKING_AVAILABLE:
-                    try:
-                        # Extract metadata for tracking
-                        metadata = {
-                            'operation': 'copy',
-                            'message': message,
-                            'destination': destination
-                        }
-                        track_file_operation(tracker, 'copy', source, success, metadata)
-                    except Exception as e:
-                        log('Copy', f'Failed to track operation for {source}: {e}', 'warning', 
-                            logfile=logfile, logpath=log_path)
+                # Operation tracked via JSON logging in update_copy_report()
 
                 if success:
                     successful_copies += 1
