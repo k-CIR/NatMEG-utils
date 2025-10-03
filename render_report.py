@@ -256,14 +256,17 @@ def create_tree_from_paths(file_data, path_key='path', name_key='name', project_
         if isinstance(item, dict):
             file_paths = item.get(path_key, '')
             if file_paths:
-                # Handle both string paths and lists of paths
-                paths_to_process = []
+                # Handle both string paths and lists of paths (consolidate split files)
                 if isinstance(file_paths, list):
-                    paths_to_process = file_paths
+                    # For split files, use the first path as the representative path
+                    # The full list information is preserved in the item itself
+                    paths_to_process = [file_paths[0]]  # Only process the first path
                 elif isinstance(file_paths, str):
                     paths_to_process = [file_paths]
+                else:
+                    paths_to_process = []
                 
-                # Process each path
+                # Process the representative path (first path for split files)
                 for file_path in paths_to_process:
                     if not isinstance(file_path, str):
                         continue
@@ -295,9 +298,6 @@ def create_tree_from_paths(file_data, path_key='path', name_key='name', project_
                     
                     # Build nested directory structure and add file
                     file_item = item.copy()
-                    if isinstance(file_paths, list):
-                        # For list paths, store the specific path this entry represents
-                        file_item['__current_path__'] = file_path
                     
                     if len(parts) == 1:
                         # Root level file
@@ -1105,7 +1105,7 @@ def generate_dashboard_report(data, title="Pipeline Dashboard", output_file="pip
                                     {% if row.original_data and row.original_data['New file(s)'] %}
                                         {% if row.original_data['New file(s)'] is sequence and row.original_data['New file(s)'] is not string %}
                                             {{ row.original_data['New file(s)'][0] | basename }}
-                                            {% if row.original_data['New file(s)'] | length > 1 %} <span class="dim">(+{{ row.original_data['New file(s)'] | length - 1 }} more)</span>{% endif %}
+                                            {% if row.original_data['New file(s)'] | length > 1 %} <span class="dim">(+{{ row.original_data['New file(s)'] | length - 1 }} split)</span>{% endif %}
                                         {% else %}
                                             {{ row.original_data['New file(s)'] | basename }}
                                         {% endif %}
