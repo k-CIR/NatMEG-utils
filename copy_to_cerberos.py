@@ -176,10 +176,27 @@ def copy_data(source, destination, logfile=None, log_path=None):
         if all([is_fif_file, fif_2GB, fif_except, is_not_split]):
             # Check if larger than 2GB
             try:
+                # Store original destination path to maintain relative path structure
+                original_destination = destination
                 raw = read_raw(source, allow_maxshield=True, verbose='error')
                 raw.save(destination, overwrite=True, verbose='error')
-                destination = [str(f) for f in 
-                               read_raw(destination, allow_maxshield=True, verbose='error').filenames]
+                
+                # Get the actual split file paths, but convert them back to the same path format as original
+                split_files = [str(f) for f in read_raw(destination, allow_maxshield=True, verbose='error').filenames]
+                
+                # Convert absolute split file paths to relative paths matching original format
+                if os.path.isabs(original_destination):
+                    # Original was absolute, keep split files as absolute
+                    destination = split_files
+                else:
+                    # Original was relative, convert split files to relative
+                    destination_dir = dirname(original_destination)
+                    relative_split_files = []
+                    for split_file in split_files:
+                        split_basename = basename(split_file)
+                        relative_split_files.append(join(destination_dir, split_basename))
+                    destination = relative_split_files
+                
                 if logfile and log_path:
                     log('Copy', f'Copied (split if > 2GB) {source} --> {destination}', 
                         logfile=logfile, logpath=log_path)
@@ -463,6 +480,28 @@ def update_copy_report(results, config):
     log_path = join(project_root, 'log')
     report_file = f'{log_path}/copy_results.json'
     
+    # Get project root for path normalization - find the root that contains both source and destination paths
+    # This should be the workspace root (e.g., /Users/.../Sites/NatMEG-utils)
+    # Find the workspace root by looking for the directory containing 'neuro'
+    current_path = project_root
+    while not os.path.exists(os.path.join(current_path, 'neuro')):
+        parent = os.path.dirname(current_path)
+        if parent == current_path:  # Reached filesystem root
+            break
+        current_path = parent
+    workspace_root = current_path
+    
+    def normalize_path(path):
+        """Convert absolute path to relative path from workspace root."""
+        if isinstance(path, str) and os.path.isabs(path):
+            try:
+                # Convert to relative path from workspace root
+                rel_path = os.path.relpath(path, workspace_root)
+                return rel_path if not rel_path.startswith('..') else path
+            except ValueError:
+                return path
+        return path
+    
     # Load existing report if it exists
     existing_report = []
     if exists(report_file):
@@ -506,6 +545,8 @@ def update_copy_report(results, config):
     
     new_entries = []
     for source_file, group_info in source_groups.items():
+
+        
         # Filter out destinations that already exist in the report
         new_destinations = []
         for dest_file in group_info['destinations']:
@@ -514,8 +555,16 @@ def update_copy_report(results, config):
         
         # Only create an entry if there are new destinations
         if new_destinations:
+            # Normalize paths to be relative to workspace root
+            normalized_source = normalize_path(source_file)
+            
+            # Normalize destination paths
+            normalized_destinations = []
+            for dest in new_destinations:
+                normalized_destinations.append(normalize_path(dest))
+            
             # Create entry with list of destinations if multiple, single string if only one
-            dest_value = new_destinations if len(new_destinations) > 1 else new_destinations[0]
+            dest_value = normalized_destinations if len(normalized_destinations) > 1 else normalized_destinations[0]
             
             # Get file sizes
             original_size = None
@@ -543,7 +592,7 @@ def update_copy_report(results, config):
             dest_size_value = dest_sizes if len(dest_sizes) > 1 else (dest_sizes[0] if dest_sizes else None)
             
             new_entries.append({
-                'Original File': source_file,
+                'Original File': normalized_source,
                 'Copy Date': datetime.fromtimestamp(os.path.getctime(source_file)).strftime('%y%m%d'),
                 'Copy Time': datetime.fromtimestamp(os.path.getctime(source_file)).strftime('%H%M%S'),
                 'New file(s)': dest_value,

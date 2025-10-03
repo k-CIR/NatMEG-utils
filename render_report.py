@@ -208,6 +208,97 @@ def create_tree_from_paths(file_data, path_key='path', name_key='name', project_
     """Create hierarchical tree structure from file paths, starting from common root."""
     tree_items = []
     
+    # Consolidate BIDS split files: Group entries by BIDS file path
+    # For BIDS data, multiple source files may map to the same BIDS file (split files)
+    if path_key == 'BIDS File':
+        consolidated_data = {}
+        for item in file_data:
+            bids_file = item.get('BIDS File', '')
+            
+            # Handle case where BIDS File might already be an array from consolidation
+            if isinstance(bids_file, list):
+                # Use the first BIDS file as the key for grouping
+                bids_file_key = bids_file[0] if bids_file else ''
+            else:
+                bids_file_key = bids_file
+                
+            if bids_file_key:
+                if bids_file_key not in consolidated_data:
+                    consolidated_data[bids_file_key] = {
+                        **item,  # Copy all fields from first occurrence
+                        'source_files': [],  # Track all source files
+                        'split_info': [],    # Track split information
+                        'bids_sizes': [],    # Track BIDS sizes for all entries
+                        'source_sizes': []   # Track source sizes for all entries
+                    }
+                
+                # Add source file and split info to lists
+                source_file = item.get('Source File', '')
+                split_info = item.get('Split')
+                bids_size = item.get('BIDS Size')
+                source_size = item.get('Source Size')
+                
+                # Handle case where Source File might already be an array from previous consolidation
+                if isinstance(source_file, list):
+                    # Process each source file in the array
+                    processed_source_files = []
+                    for sf in source_file:
+                        if project_root and sf.startswith(project_root.rstrip('/') + '/'):
+                            sf = sf[len(project_root.rstrip('/') + '/'):]
+                        processed_source_files.append(sf)
+                    source_file = processed_source_files
+                else:
+                    # Strip project root from source file path if present
+                    if project_root and source_file.startswith(project_root.rstrip('/') + '/'):
+                        source_file = source_file[len(project_root.rstrip('/') + '/'):]
+                
+                # Handle both single files and arrays when adding to consolidated data
+                if isinstance(source_file, list):
+                    consolidated_data[bids_file_key]['source_files'].extend(source_file)
+                else:
+                    consolidated_data[bids_file_key]['source_files'].append(source_file)
+                    
+                consolidated_data[bids_file_key]['split_info'].append(split_info)
+                consolidated_data[bids_file_key]['bids_sizes'].append(bids_size)
+                consolidated_data[bids_file_key]['source_sizes'].append(source_size)
+        
+        # Convert back to list, using Source File as path but keeping BIDS consolidation info
+        file_data = []
+        for bids_file, consolidated_item in consolidated_data.items():
+            # Use the first source file as the representative path (like copy consolidation)
+            first_source = consolidated_item['source_files'][0] if consolidated_item['source_files'] else ''
+            
+            # Preserve original BIDS file path for display
+            original_bids_file = consolidated_item.get('BIDS File', bids_file)
+            
+            # Use source file as path for tree structure but keep BIDS info
+            consolidated_item[path_key] = first_source  # Use source file as path for tree structure  
+            consolidated_item['BIDS File'] = original_bids_file  # Preserve original BIDS file
+            
+            # Consolidate BIDS Size - use first non-null value or sum if multiple valid sizes
+            bids_sizes = consolidated_item['bids_sizes']
+            valid_bids_sizes = [size for size in bids_sizes if size is not None]
+            if valid_bids_sizes:
+                # Use the first valid BIDS size (since split files should have same BIDS target)
+                consolidated_item['BIDS Size'] = valid_bids_sizes[0]
+            
+            # Consolidate Source Size - sum all source sizes
+            source_sizes = consolidated_item['source_sizes']
+            valid_source_sizes = [size for size in source_sizes if size is not None]
+            if valid_source_sizes:
+                consolidated_item['Source Size'] = sum(valid_source_sizes)
+            
+            # Set up name field for consolidation display
+            split_files = [s for s in consolidated_item['split_info'] if s is not None]
+            if len(consolidated_item['source_files']) > 1:
+                # Multiple files - create list representation for split display
+                consolidated_item[name_key] = consolidated_item['source_files']
+            else:
+                # Single file - use the source file name
+                consolidated_item[name_key] = first_source
+            
+            file_data.append(consolidated_item)
+    
     # Determine what to strip from paths based on project_root or find common prefix
     path_prefix_to_strip = ""
     
@@ -298,6 +389,21 @@ def create_tree_from_paths(file_data, path_key='path', name_key='name', project_
                     
                     # Build nested directory structure and add file
                     file_item = item.copy()
+                    
+                    # Strip project root from New file(s) field for Copy results
+                    if path_prefix_to_strip and 'New file(s)' in file_item:
+                        new_files = file_item['New file(s)']
+                        if isinstance(new_files, list):
+                            # Strip project root from each file in the list
+                            stripped_files = []
+                            for f in new_files:
+                                if isinstance(f, str) and f.startswith(path_prefix_to_strip):
+                                    stripped_files.append(f[len(path_prefix_to_strip):])
+                                else:
+                                    stripped_files.append(f)
+                            file_item['New file(s)'] = stripped_files
+                        elif isinstance(new_files, str) and new_files.startswith(path_prefix_to_strip):
+                            file_item['New file(s)'] = new_files[len(path_prefix_to_strip):]
                     
                     if len(parts) == 1:
                         # Root level file
@@ -556,12 +662,34 @@ def generate_dashboard_report(data, title="Pipeline Dashboard", output_file="pip
     env.filters['tojson'] = tojson
     
     def basename_filter(path):
+        if isinstance(path, list):
+            # For arrays, return the basename of the first item
+            return basename(path[0]) if path and path[0] else ''
         return basename(path) if path else ''
     env.filters['basename'] = basename_filter
     
     def truncate_filter(text, length=60):
         return text[:length] + '...' if len(text) > length else text
     env.filters['truncate'] = truncate_filter
+    
+    def strip_split_suffix(filename):
+        """Strip split file suffix like -1, -2, etc. from filename."""
+        import re
+        if not filename:
+            return filename
+        
+        if isinstance(filename, list):
+            # For arrays, process the first item
+            first_filename = filename[0] if filename else ''
+            if not first_filename:
+                return ''
+            # Pattern matches -1, -2, etc. before .extension
+            return re.sub(r'-\d+(\.[^.]*)?$', r'\1', first_filename)
+        
+        # Pattern matches -1, -2, etc. before .extension
+        # e.g., "PhalangesOPM_raw-1.fif" -> "PhalangesOPM_raw.fif"
+        return re.sub(r'-\d+(\.[^.]*)?$', r'\1', filename)
+    env.filters['strip_split_suffix'] = strip_split_suffix
 
     if remote_tree is None:
         remote_tree = {}
@@ -1246,6 +1374,7 @@ def generate_dashboard_report(data, title="Pipeline Dashboard", output_file="pip
                                     <span style='width: 16px; display: inline-block;'></span>
                                     {% if row.original_data and row.original_data.get('BIDS File') %}
                                         {{ row.original_data['BIDS File'] | basename }}
+                                        {% if row.name is iterable and row.name is not string and row.name | length > 1 %} <span class="dim">(+{{ row.name | length - 1 }} split)</span>{% endif %}
                                     {% else %}
                                         {{ row.name }}
                                     {% endif %}
@@ -1273,7 +1402,11 @@ def generate_dashboard_report(data, title="Pipeline Dashboard", output_file="pip
                             <td>
                                 {% if row.type == 'file' and row.original_data %}
                                     {% set entry = row.original_data %}
-                                    <code style="font-size: 0.85em;">{{ entry.get('Source File', '') }}</code>
+                                    {% if row.name is iterable and row.name is not string %}
+                                        <code style="font-size: 0.85em;">{{ row.name[0] | basename }}</code>
+                                    {% else %}
+                                        <code style="font-size: 0.85em;">{{ entry.get('Source File', '') | basename | strip_split_suffix }}</code>
+                                    {% endif %}
                                 {% else %}
                                     <span class="dim">—</span>
                                 {% endif %}
