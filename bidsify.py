@@ -694,7 +694,7 @@ def update_conversion_table(conversion_table: pd.DataFrame,
         files = (glob(row['bids_name'] + '*',
                  root_dir=row['bids_path']) + 
             glob(row['bids_name'].rsplit('_', 1)[0] + '_split*' + row['bids_name'].rsplit('_', 1)[1] + '*', 
-                 root_dir=row['bids_path'])) 
+                 root_dir=row['bids_path']))
     
         if not files:
             conversion_table.at[i, 'run_conversion'] = 'yes'
@@ -753,14 +753,22 @@ def update_bids_report(conversion_table: pd.DataFrame, config: dict):
     grouped_entries = {}
     for i, row in conversion_table.iterrows():
         source_file = f"{row['raw_path']}/{row['raw_name']}"
-        source_base = re.sub(r'_raw-\d+\.fif$', '*fif', source_file)
-        
-        print(i+ 1, glob(source_base))
-        bids_file = f"{row['bids_path']}/{row['bids_name']}"
+        source_base = re.sub(r'_raw-\d+\.fif$', '.fif', source_file)
         
         # Create a base key for grouping (remove split suffixes)
         
-        bids_base = re.sub(r'_split-\d+_', '_', bids_file)
+        files = (glob(row['bids_name'] + '*',
+                 root_dir=row['bids_path']) + 
+            glob(row['bids_name'].rsplit('_', 1)[0] + '_split*' + row['bids_name'].rsplit('_', 1)[1] + '*', 
+                 root_dir=row['bids_path']))
+    
+        # TODO: update bids_results here as well
+        if len(files) > 1:
+            split = True
+            bids_file = files
+        elif len(files) == 1:
+            split = False
+            bids_file = files[0]
         
         # Use source base + task + acquisition as the grouping key
         group_key = (source_base, row['task'], row['acquisition'], row.get('processing', ''))
@@ -776,7 +784,10 @@ def update_bids_report(conversion_table: pd.DataFrame, config: dict):
         
         # Add files to the group
         grouped_entries[group_key]['source_files'].append(source_file)
-        grouped_entries[group_key]['bids_files'].append(bids_file)
+        if split:
+            grouped_entries[group_key]['bids_files'].extend(bids_file)
+        else:
+            grouped_entries[group_key]['bids_files'].append(bids_file)
         
         # Get file sizes
         source_size = None
@@ -787,11 +798,21 @@ def update_bids_report(conversion_table: pd.DataFrame, config: dict):
                 source_size = None
         
         bids_size = None
-        if exists(bids_file):
-            try:
-                bids_size = getsize(bids_file)
-            except (OSError, FileNotFoundError):
-                bids_size = None
+        if split:
+            for file in bids_file:
+                if exists(f"{row['bids_path']}/{file}"):
+                    try:
+                        if bids_size is None:
+                            bids_size = 0
+                        bids_size += getsize(f"{row['bids_path']}/{file}")
+                    except (OSError, FileNotFoundError):
+                        continue
+        else:
+            if exists(bids_file):
+                try:
+                    bids_size = getsize(bids_file)
+                except (OSError, FileNotFoundError):
+                    bids_size = None
         
         grouped_entries[group_key]['source_sizes'].append(source_size)
         grouped_entries[group_key]['bids_sizes'].append(bids_size)
@@ -808,12 +829,12 @@ def update_bids_report(conversion_table: pd.DataFrame, config: dict):
         # Check if this group is already in the existing report
         # Use first source file and first bids file for duplicate detection
         primary_source = source_files[0] if source_files else ""
-        primary_bids = bids_files[0] if bids_files else ""
+        primary_bids = bids_files if bids_files else ""
         
-        if (primary_source, primary_bids) not in existing_entries:
+        if (primary_source) not in existing_entries:
             # Sort source files: base file first, then splits in order
             # Create list of (source_file, bids_file, source_size, bids_size) tuples for sorting
-            file_tuples = list(zip(source_files, bids_files, source_sizes, bids_sizes))
+            file_tuples = list(zip(source_files, [bids_files], source_sizes, bids_sizes))
             
             # Sort by source filename: base file (no -N suffix) first, then by split number
             def sort_key(file_tuple):
@@ -1066,9 +1087,6 @@ def bidsify(config: dict):
         except Exception as e:
             log('BIDS', f"Error writing calibration/crosstalk files: {e}", level='error', logfile=logfile, logpath=logpath)
     
-    # Store original dataframe for reporting (includes split files)
-    df_original = df.copy()
-    
     # ignore split files as they are processed automatically
     df = df[df['split'].isna()]
 
@@ -1077,7 +1095,7 @@ def bidsify(config: dict):
     if len(deviants) > 0:
         log('BIDS', 'Deviants found, please check the conversion table and run again', level='warning', logfile=logfile, logpath=logpath)
         # Still create BIDS report even when deviants found
-        update_bids_report(df_original, config)
+        update_bids_report(df, config)
         return
 
     for i, d in df.iterrows():
@@ -1225,7 +1243,7 @@ def bidsify(config: dict):
     
     # Update BIDS processing report in JSON format for pipeline tracking
     # Use original dataframe which includes split files
-    update_bids_report(df_original, config)
+    update_bids_report(df, config)
     
     log('BIDS', f'All files bidsified according to {conversion_file}', level='info', logfile=logfile, logpath=logpath)
     # df.to_csv(f'{path_BIDS}/conversion_logs/bids_conversion.tsv', sep='\t', index=False)

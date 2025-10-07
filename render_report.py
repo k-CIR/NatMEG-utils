@@ -262,18 +262,40 @@ def create_tree_from_paths(file_data, path_key='path', name_key='name', project_
                 consolidated_data[bids_file_key]['bids_sizes'].append(bids_size)
                 consolidated_data[bids_file_key]['source_sizes'].append(source_size)
         
-        # Convert back to list, using Source File as path but keeping BIDS consolidation info
+        # Convert back to list, using BIDS File as path for tree structure
         file_data = []
+        print(f"DEBUG: Consolidating {len(consolidated_data)} BIDS file groups")
         for bids_file, consolidated_item in consolidated_data.items():
-            # Use the first source file as the representative path (like copy consolidation)
+            # Use the first source file as the representative source
             first_source = consolidated_item['source_files'][0] if consolidated_item['source_files'] else ''
             
-            # Preserve original BIDS file path for display
+            # Preserve original BIDS file path for display and use it for the tree structure
             original_bids_file = consolidated_item.get('BIDS File', bids_file)
             
-            # Use source file as path for tree structure but keep BIDS info
-            consolidated_item[path_key] = first_source  # Use source file as path for tree structure  
-            consolidated_item['BIDS File'] = original_bids_file  # Preserve original BIDS file
+            # For BIDS File path_key, construct full BIDS path from filename but keep original for display
+            if path_key == 'BIDS File':
+                # Extract participant and session from the filename to build proper path
+                # bids_file is the first filename from the array (e.g., "sub-0953_ses-241104_task-RSEC_acq-triux_desc-trans_meg.fif")
+                participant = consolidated_item.get('Participant', '')
+                session = consolidated_item.get('Session', '')
+                datatype = consolidated_item.get('Datatype', 'meg')  # default to meg
+                
+                if participant and session:
+                    # Construct BIDS directory path: sub-0953/ses-241104/meg/filename.fif
+                    # Use the first BIDS filename as the representative file for the path
+                    bids_dir_path = f"sub-{participant}/ses-{session}/{datatype}/{bids_file}"
+                    # For tree structure, we need a path that creates directories
+                    consolidated_item['_tree_path'] = bids_dir_path  # Internal path for tree building
+                    print(f"DEBUG: Set _tree_path for BIDS file: {bids_dir_path}")
+                else:
+                    # Fallback to just the filename if we can't construct full path
+                    consolidated_item['_tree_path'] = bids_file
+                    print(f"DEBUG: Set _tree_path fallback for BIDS file: {bids_file}")
+            else:
+                consolidated_item[path_key] = bids_file
+                
+            # Always preserve the original BIDS file array for display purposes in the template
+            consolidated_item['BIDS File'] = original_bids_file
             
             # Consolidate BIDS Size - use first non-null value or sum if multiple valid sizes
             bids_sizes = consolidated_item['bids_sizes']
@@ -299,6 +321,10 @@ def create_tree_from_paths(file_data, path_key='path', name_key='name', project_
             
             file_data.append(consolidated_item)
     
+        print(f"DEBUG: After consolidation, have {len(file_data)} file data entries")
+        if file_data:
+            print(f"DEBUG: First consolidated entry path_key ({path_key}): {file_data[0].get(path_key, 'NOT_FOUND')}")
+    
     # Determine what to strip from paths based on project_root or find common prefix
     path_prefix_to_strip = ""
     
@@ -310,7 +336,14 @@ def create_tree_from_paths(file_data, path_key='path', name_key='name', project_
         all_paths = []
         for item in file_data:
             if isinstance(item, dict):
-                file_path = item.get(path_key, '')
+                print(f"DEBUG: Processing item with path_key='{path_key}', has _tree_path={'_tree_path' in item}")
+                # For BIDS File path_key, use the internal tree path we constructed
+                if path_key == 'BIDS File' and '_tree_path' in item:
+                    file_path = item['_tree_path']
+                    print(f"DEBUG: Using _tree_path for BIDS: {file_path}")
+                else:
+                    file_path = item.get(path_key, '')
+                    print(f"DEBUG: Using regular path for {path_key}: {file_path}")
                 if file_path:
                     # Handle both string paths and lists of paths
                     if isinstance(file_path, list):
@@ -345,7 +378,11 @@ def create_tree_from_paths(file_data, path_key='path', name_key='name', project_
     
     for item in file_data:
         if isinstance(item, dict):
-            file_paths = item.get(path_key, '')
+            # For BIDS File path_key, use the internal tree path we constructed
+            if path_key == 'BIDS File' and '_tree_path' in item:
+                file_paths = item['_tree_path']
+            else:
+                file_paths = item.get(path_key, '')
             if file_paths:
                 # Handle both string paths and lists of paths (consolidate split files)
                 if isinstance(file_paths, list):
@@ -785,7 +822,7 @@ def generate_dashboard_report(data, title="Pipeline Dashboard", output_file="pip
         if pipeline_data.get('copy_results'):
             copy_tree_items = create_tree_from_paths(pipeline_data['copy_results'], 'New file(s)', 'Original File', project_root)
             copy_tree_rows = copy_tree_items
-            
+
         # Create tree structure for BIDS results (use BIDS destination paths to define tree, show Source paths as content)
         if pipeline_data.get('bids_results'):
             # Enrich BIDS results with status information from bids_conversion table
@@ -1226,14 +1263,13 @@ def generate_dashboard_report(data, title="Pipeline Dashboard", output_file="pip
                             <td>
                                 <span class='indent' style='width: {{ row.level * 14 }}px'></span>
                                 {% if row.type == 'dir' %}
-                                    <span class="tree-icon">▶</span>📁 {{ row.name }} 
-                                    {% if row.file_count %}<span class="dim">({{ row.file_count }} files)</span>{% endif %}
+                                    <span class="tree-icon">▶</span>📁 {{ row.name }}
+                                    {% if row.file_count %}<span class="dim"> ({{ row.file_count }} files)</span>{% endif %}
                                 {% else %}
                                     <span style='width: 16px; display: inline-block;'></span>
                                     {% if row.original_data and row.original_data['New file(s)'] %}
                                         {% if row.original_data['New file(s)'] is sequence and row.original_data['New file(s)'] is not string %}
                                             {{ row.original_data['New file(s)'][0] | basename }}
-                                            {% if row.original_data['New file(s)'] | length > 1 %} <span class="dim">(+{{ row.original_data['New file(s)'] | length - 1 }} split)</span>{% endif %}
                                         {% else %}
                                             {{ row.original_data['New file(s)'] | basename }}
                                         {% endif %}
@@ -1256,7 +1292,6 @@ def generate_dashboard_report(data, title="Pipeline Dashboard", output_file="pip
                                     {% if entry.get('Destination Size(s)') %}
                                         {% if entry['Destination Size(s)'] is sequence and entry['Destination Size(s)'] is not string %}
                                             {{ entry['Total Destination Size'] | filesize }}
-                                            <span class="dim">({{ entry['Destination Size(s)'] | length }} files)</span>
                                         {% else %}
                                             {{ entry['Destination Size(s)'] | filesize }}
                                         {% endif %}
@@ -1368,13 +1403,21 @@ def generate_dashboard_report(data, title="Pipeline Dashboard", output_file="pip
                             <td>
                                 <span class='indent' style='width: {{ row.level * 14 }}px'></span>
                                 {% if row.type == 'dir' %}
-                                    <span class="tree-icon">▶</span>📁 {{ row.name }} 
-                                    {% if row.file_count %}<span class="dim">({{ row.file_count }} files)</span>{% endif %}
+                                    <span class="tree-icon">▶</span>📁 {{ row.name }}
+                                    {% if row.file_count %}<span class="dim"> ({{ row.file_count }} files)</span>{% endif %}
                                 {% else %}
                                     <span style='width: 16px; display: inline-block;'></span>
                                     {% if row.original_data and row.original_data.get('BIDS File') %}
-                                        {{ row.original_data['BIDS File'] | basename }}
-                                        {% if row.name is iterable and row.name is not string and row.name | length > 1 %} <span class="dim">(+{{ row.name | length - 1 }} split)</span>{% endif %}
+                                        {% set bids_files = row.original_data['BIDS File'] %}
+                                        {% if bids_files is iterable and bids_files is not string %}
+                                            <div style="line-height: 1.4;">
+                                            {% for bids_file in bids_files %}
+                                                <code style="font-size: 0.85em; display: block; margin: 1px 0;">{{ bids_file | basename }}</code>
+                                            {% endfor %}
+                                            </div>
+                                        {% else %}
+                                            {{ bids_files | basename }}
+                                        {% endif %}
                                     {% else %}
                                         {{ row.name }}
                                     {% endif %}

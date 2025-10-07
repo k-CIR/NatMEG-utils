@@ -301,12 +301,12 @@ def extract_info_from_filename(file_name: str):
     split = split_match.group(1).strip('.fif') if split_match else ''
     
     exclude_from_task = '|'.join(['NatMEG_'] + ['sub-'] + ['proc']+ datatypes + [participant] + [extension] + proc + [split] + ['\\+'] + ['\\-'] + desc)
-    
+    acquisition = 'triux'
     if file_contains(file_name, opm_exceptions_patterns):
         datatypes.append('opm')
     
     if 'opm' in datatypes or 'kaptah' in file_name:    
-
+        acquisition = 'hedscan'
         exclude_from_task = '|'.join(['NatMEG_'] + ['sub-'] + ['proc-']+ datatypes + [participant] + [extension] + proc + [split] + ['\\+'] + ['\\-'] + ['file']+ desc + [r'\d{8}_', r'\d{6}_'])
         if not file_contains(file_name, opm_exceptions_patterns):
             exclude_from_task += '|hpi|ds'
@@ -341,6 +341,7 @@ def extract_info_from_filename(file_name: str):
         'participant': participant,
         'task': task,
         'split': split,
+        'acquisition': acquisition,
         'processing': proc,
         'description': desc,
         'datatypes': datatypes,
