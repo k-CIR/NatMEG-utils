@@ -72,6 +72,7 @@ BIDS:
   New_subjID_name: new_subject_id
   Original_session_name: old_session_id
   New_session_name: new_session_id
+  folders_are_BIDS: false
   overwrite: false
   dataset_type: raw
   data_license: ''

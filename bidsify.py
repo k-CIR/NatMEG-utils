@@ -497,9 +497,8 @@ def bids_path_from_filename(file_name, date_session, config, pmap=None):
     Extract BIDS path from filename using config and optional participant mapping.
     
     Args:
-        file_path: Path to the raw file
+        file_name: Path to the raw file
         date_session: Session identifier
-        mod: Modality (triux/hedscan)
         config: Configuration dictionary containing all paths and settings
         pmap: Optional participant mapping dataframe
     
@@ -512,6 +511,7 @@ def bids_path_from_filename(file_name, date_session, config, pmap=None):
         return None
     
     bids_root = config.get('BIDS', '')
+    folders_are_bids = config.get('folders_are_BIDS', False)
     info_dict = extract_info_from_filename(file_name)
     
     # Validate required fields
@@ -536,8 +536,18 @@ def bids_path_from_filename(file_name, date_session, config, pmap=None):
     suffix = info_dict.get('suffix')
     
     # Map participant/session if needed
-    subj_out = subject.zfill(4)
-    session_out = date_session
+    if folders_are_bids:
+        # For BIDS folders, keep the subject ID as 3 digits (strip leading zeros if needed)
+        subj_out = subject.lstrip('0').zfill(3) if len(subject) > 3 else subject
+        # Extract numeric part from session folder name (e.g., "ses-01" -> "01")
+        if date_session.startswith('ses-'):
+            session_out = date_session.replace('ses-', '')
+        else:
+            session_out = date_session
+    else:
+        # For traditional NatMEG naming, pad to 4 digits
+        subj_out = subject.zfill(4)
+        session_out = date_session
 
     if pmap is not None:
         old_subj_id = config.get('Original_subjID_name', '')
@@ -622,11 +632,12 @@ def generate_new_conversion_table(config: dict):
             print('Participant mapping file not found, skipping')
     
     participants = glob('sub-*', root_dir=path_raw)
+    folders_are_bids = config.get('folders_are_BIDS', False)
     
     def process_file_entry(job):
         """Process a single file entry - designed for parallel execution"""
-        participant, date_session, mod, file = job
-        full_file_name = os.path.join(path_raw, participant, date_session, mod, file)
+        participant_folder, date_session, mod, file = job
+        full_file_name = os.path.join(path_raw, participant_folder, date_session, mod, file)
         
         bids_path, info_dict = bids_path_from_filename(full_file_name, date_session, config, pmap)
         split = info_dict.get('split')
@@ -644,7 +655,10 @@ def generate_new_conversion_table(config: dict):
         extension = bids_path.extension
         subj_out = bids_path.subject
         session_out = bids_path.session
-        bids_path.acquisition
+        acquisition = mod
+        
+        # Get participant ID from filename extraction, not from folder name
+        participant_from_file = info_dict.get('participant')
         
         # Check for event file
         event_file = None
@@ -670,7 +684,7 @@ def generate_new_conversion_table(config: dict):
         return {
             'time_stamp': ts,
             'status': status,
-            'participant_from': participant,
+            'participant_from': participant_from_file,
             'participant_to': subj_out,
             'session_from': date_session,
             'session_to': session_out,
@@ -678,7 +692,7 @@ def generate_new_conversion_table(config: dict):
             'split': split,
             'run': run,
             'datatype': datatype,
-            'acquisition': mod,
+            'acquisition': acquisition,
             'processing': proc,
             'description': desc,
             'raw_path': dirname(full_file_name),
@@ -908,11 +922,15 @@ def bidsify(config: dict):
             print('Participant file not found, skipping')
             
     is_natmeg_id =  all(df['participant_from'].str.replace('sub-', '').astype(int) == df['participant_to'].astype(int))
+    folders_are_bids = config.get('folders_are_BIDS', False)
     
     # Start by creating the BIDS directory structure
     unique_participants_sessions = df[['participant_to', 'session_to', 'datatype']].drop_duplicates()
     for _, row in unique_participants_sessions.iterrows():
-        if is_natmeg_id:
+        if folders_are_bids:
+            # For BIDS folders, use 3-digit padding
+            subject_padded = str(row['participant_to']).zfill(3)
+        elif is_natmeg_id:
             subject_padded = str(row['participant_to']).zfill(4)
         else:
             subject_padded = str(row['participant_to']).zfill(3)
