@@ -1,0 +1,6 @@
+{
+  "dependencies": {
+    "bids-validator": "^1.13.1",
+    "npm": "^11.6.2"
+  }
+}

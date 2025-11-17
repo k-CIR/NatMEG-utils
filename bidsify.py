@@ -1,4 +1,3 @@
-
 import pandas as pd
 import json
 import yaml
@@ -16,7 +15,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import subprocess
 from tqdm import tqdm
 
-
 from mne_bids import (
     BIDSPath,
     write_raw_bids,
@@ -31,6 +29,7 @@ from mne_bids import (
     )
 from mne_bids.utils import _write_json
 from mne_bids.write import _sidecar_json
+import mne_bids
 import mne
 import time
 from bids_validator import BIDSValidator
@@ -65,7 +64,7 @@ CONVERSION_TABLE_FIELDS = {
     'processing': 'Processing pipeline applied (hpi, sss, etc.)',
     'description': 'Additional BIDS description field',
     'datatype': 'BIDS datatype (meg/eeg)', 
-    'split': 'Split file indicator for large files',
+    'split': 'Split file indicator for large files (auto-managed)',
     'run': 'BIDS run number for repeated acquisitions',
     'raw_path': 'Full path to source raw file directory',
     'raw_name': 'Source raw filename',
@@ -100,28 +99,41 @@ def create_dataset_description(config: dict):
     """
     
     # Make sure the BIDS directory exists and create it if it doesn't
-    os.makedirs(config['BIDS'], exist_ok=True)
+    # Get dataset description config or fall back to old structure
+    dataset_desc = config.get('Dataset_description', {})
+    bids_path = config.get('BIDS', {})
+    os.makedirs(bids_path, exist_ok=True)
     
     # Define the path to the dataset_description.json file
     
-    file_bids = f"{config['BIDS']}/{config['Dataset_description']}"
+    file_bids = f"{bids_path}/{dataset_desc}"
 
-    # Create empty dataset description if not exists
-    if not exists(file_bids):
+    # Create empty dataset description if not exists or overwrite is enabled
+    if not exists(file_bids) or config.get('overwrite', False):
         make_dataset_description(
-            path = config['BIDS'],
-            name = config['Name'],
-            dataset_type = config['dataset_type'],
-            data_license = config['data_license'],
-            authors = config['authors'],
-            acknowledgements = config['acknowledgements'],
-            how_to_acknowledge = config['how_to_acknowledge'],
-            funding = config['funding'],
-            ethics_approvals = config['ethics_approvals'],
-            references_and_links = config['references_and_links'],
-            doi = config['doi'],
-            overwrite = config['overwrite']
+            path=bids_path,
+            name=config.get('Name', config.get('Name', 'MEG Dataset')),
+            dataset_type=config.get('DatasetType', config.get('dataset_type', 'raw')),
+            data_license=config.get('License', config.get('data_license', '')),
+            authors=config.get('Authors', config.get('authors', [])),
+            acknowledgements=config.get('Acknowledgements', config.get('acknowledgements', '')),
+            how_to_acknowledge=config.get('HowToAcknowledge', config.get('how_to_acknowledge', '')),
+            funding=config.get('Funding', config.get('funding', [])),
+            ethics_approvals=config.get('EthicsApprovals', config.get('ethics_approvals', [])),
+            references_and_links=config.get('ReferencesAndLinks', config.get('references_and_links', [])),
+            doi=config.get('DatasetDOI', config.get('doi', '')),
+            overwrite=config.get('overwrite', False)
         )
+
+        # Add GeneratedBy field manually if provided
+        generated_by = config.get('GeneratedBy', None)
+        if generated_by:
+            import json
+            with open(file_bids, 'r') as f:
+                desc_data = json.load(f)
+            desc_data['GeneratedBy'] = generated_by
+            with open(file_bids, 'w') as f:
+                json.dump(desc_data, f, indent=4)
 
 def create_participants_files(config: dict):
     """
@@ -144,8 +156,9 @@ def create_participants_files(config: dict):
     # check if participants.tsv and participants.json files is available or create a new one with default fields
     os.makedirs(config['BIDS'], exist_ok=True)
     
-    tsv_file = os.path.join(config['BIDS'], config['Participants'])
-    if not exists(tsv_file) or config['overwrite']:
+    participants_filename = config.get('Participants', 'participants.tsv')
+    tsv_file = os.path.join(config['BIDS'], participants_filename)
+    if not exists(tsv_file) or config.get('overwrite', False):
         # create default fields participants.tsv
         participants = glob('sub*', root_dir=config['BIDS'])
         # create empty table with 4 columns (participant_id, sex, age)
@@ -157,7 +170,7 @@ def create_participants_files(config: dict):
 
     json_file = os.path.join(config['BIDS'], 'participants.json')
 
-    if not exists(json_file) or config['overwrite']:
+    if not exists(json_file) or config.get('overwrite', False):
         participants_json = {
             "participant_id": {
                 "Description": "Unique participant identifier"
@@ -296,12 +309,16 @@ def update_sidecars(config: dict):
             bp_json = bp.copy().update(extension='.json', split=None)
             # Check if json exists, if not create it
             if not exists(bp_json.fpath):
-                raw = read_raw_bids(bp, verbose='error')
-                _sidecar_json(raw=raw,
-                            task=bp.task,
-                            manufacturer='Elekta',
-                            fname=bp_json.fpath,
-                            datatype=bp.datatype)
+                try:
+                    raw = read_raw_bids(bp, verbose='error')
+                    _sidecar_json(raw=raw,
+                                task=bp.task,
+                                manufacturer='Elekta',
+                                fname=bp_json.fpath,
+                                datatype=bp.datatype)
+                except Exception as e:
+                    print(f"Warning: Could not create sidecar for {bp.basename}: {e}")
+                    continue
             
             with open(str(bp_json.fpath), 'r') as f:
                 sidecar = json.load(f)
@@ -492,7 +509,7 @@ def copy_eeg_to_meg(file_name: str, bids_path: BIDSPath):
 ###############################################################################
 
 
-def bids_path_from_filename(file_name, date_session, config, pmap=None):
+def bids_path_from_rawname(file_name, date_session, config, pmap=None):
     """
     Extract BIDS path from filename using config and optional participant mapping.
     
@@ -593,7 +610,6 @@ def bids_path_from_filename(file_name, date_session, config, pmap=None):
     
     return bids_path, info_dict
 
-
 def generate_new_conversion_table(config: dict):
     
     """
@@ -628,8 +644,14 @@ def generate_new_conversion_table(config: dict):
         participant, date_session, mod, file = job
         full_file_name = os.path.join(path_raw, participant, date_session, mod, file)
         
-        bids_path, info_dict = bids_path_from_filename(full_file_name, date_session, config, pmap)
-        split = info_dict.get('split')
+        bids_path, info_dict = bids_path_from_rawname(full_file_name, date_session, config, pmap)
+        
+        if info_dict['split']:
+            return None
+        split = None
+        splits = get_split_file_parts(full_file_name)
+        if isinstance(splits, list):
+            split = str(len(splits) - 1)
         
         if not bids_path:
             return None
@@ -700,8 +722,9 @@ def generate_new_conversion_table(config: dict):
                 for file in all_files:
                     jobs.append((participant, date_session, mod, file))
     
-    # Process jobs in parallel and yield results as they complete
+    # Process jobs in parallel and collect results
     max_workers = min(4, os.cpu_count() or 1)  # Use up to 4 workers
+    results = []
     
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {executor.submit(process_file_entry, job): job for job in jobs}
@@ -710,11 +733,18 @@ def generate_new_conversion_table(config: dict):
             try:
                 result = future.result()
                 if result is not None:
-                    yield result
+                    results.append(result)
             except Exception as e:
                 job = futures[future]
                 print(f"Error processing {job}: {e}")
                 continue
+    
+    # Sort results by participant, session, acquisition, task, and raw_name for consistent ordering
+    results.sort(key=lambda x: (x['participant_from'], x['session_from'], x['acquisition'], x['task'] or '', x['raw_name']))
+    
+    # Yield sorted results
+    for result in results:
+        yield result
 
 def load_conversion_table(config: dict):
     """
@@ -736,10 +766,14 @@ def load_conversion_table(config: dict):
         - May generate new conversion table
         - Prints table loading information
     """
-        # Load the most recent conversion table
-    path_BIDS = config['BIDS']
-    conversion_file = config['Conversion_file']
-    overwrite = config['Overwrite_conversion']
+    # Load the most recent conversion table
+    path_BIDS = config.get('BIDS', None)
+    conversion_file = config.get('Conversion_file', None)
+    overwrite = config.get('Overwrite_conversion', False)
+    
+    if path_BIDS is None:
+        raise ValueError("BIDS path not specified in configuration")
+        return
     
     conversion_logs_path = os.path.join(path_BIDS, 'conversion_logs')
     if not os.path.exists(conversion_logs_path):
@@ -750,12 +784,21 @@ def load_conversion_table(config: dict):
         conversion_file = os.path.join(conversion_logs_path, conversion_file)
     
     if exists(conversion_file) and not overwrite:
-        print(f"Loading conversion table from {conversion_file}")
-        conversion_table = pd.read_csv(conversion_file, sep='\t', dtype=str)
-        return conversion_table, conversion_file
+        # Check if file is not empty before reading
+        try:
+            if os.path.getsize(conversion_file) > 0:
+                print(f"Loading conversion table from {conversion_file}")
+                conversion_table = pd.read_csv(conversion_file, sep='\t', dtype=str)
+                return conversion_table, conversion_file
+            else:
+                print(f"Conversion file {conversion_file} is empty, generating new")
+        except (pd.errors.EmptyDataError, ValueError) as e:
+            print(f"Conversion file {conversion_file} is corrupted or empty, generating new")
     else:
         if overwrite:
             print(f'Overwrite requested, generating new conversion table')
+        elif not conversion_file:
+            print(f'No conversion file specified, generating new')
         else:
             print(f'Conversion file {conversion_file} not found, generating new')
         
@@ -776,8 +819,23 @@ def load_conversion_table(config: dict):
         if conversion_files:
             latest_conversion_file = conversion_files[-1]
             print(f"Loading the most recent conversion table: {basename(latest_conversion_file)}")
-            conversion_table = pd.read_csv(latest_conversion_file, sep='\t', dtype=str)
-            return conversion_table, latest_conversion_file
+            try:
+                if os.path.getsize(latest_conversion_file) > 0:
+                    conversion_table = pd.read_csv(latest_conversion_file, sep='\t', dtype=str)
+                    return conversion_table, latest_conversion_file
+                else:
+                    print(f"Warning: Generated conversion table is empty. No files found to convert.")
+                    # Return empty DataFrame with expected columns
+                    return pd.DataFrame(columns=['time_stamp', 'status', 'participant_from', 'participant_to', 
+                                                'session_from', 'session_to', 'task', 'split', 'run', 'datatype',
+                                                'acquisition', 'processing', 'description', 'raw_path', 'raw_name',
+                                                'bids_path', 'bids_name', 'event_id']), latest_conversion_file
+            except (pd.errors.EmptyDataError, ValueError) as e:
+                print(f"Warning: Generated conversion table is corrupted or empty: {e}")
+                return pd.DataFrame(columns=['time_stamp', 'status', 'participant_from', 'participant_to', 
+                                            'session_from', 'session_to', 'task', 'split', 'run', 'datatype',
+                                            'acquisition', 'processing', 'description', 'raw_path', 'raw_name',
+                                            'bids_path', 'bids_name', 'event_id']), latest_conversion_file
         else:
             raise FileNotFoundError("No conversion files found after generation")
 
@@ -796,42 +854,53 @@ def update_conversion_table(config, conversion_file=None) -> pd.DataFrame:
         - Set status of new files to 'run' or 'check'
     """
     existing_conversion_table, existing_conversion_file = load_conversion_table(config)
-    
     if not conversion_file:
         conversion_file = existing_conversion_file
     
     results = list(generate_new_conversion_table(config))
     new_conversion_table = pd.DataFrame(results)
     
-    # ignore split
-    new_conversion_table = new_conversion_table[new_conversion_table['split'].isna() | 
-                                                (new_conversion_table['split'] == '')]
+    # If no new results, return existing table
+    if new_conversion_table.empty:
+        print("No files found to add to conversion table.")
+        return existing_conversion_table, conversion_file
     
-    # Double check if bids_file exists:
-    for _, row in existing_conversion_table.iterrows():
-        bids_files = (glob(row['bids_name'] + '*',
-                 root_dir=row['bids_path']) + 
-            glob(row['bids_name'].rsplit('_', 1)[0] + '_split*' + row['bids_name'].rsplit('_', 1)[1], 
-                 root_dir=row['bids_path']))
-        if not bids_files:
-            row['status'] = 'run'
+    # ignore split files
+    # if 'split' in new_conversion_table.columns:
+    #     new_conversion_table = new_conversion_table[new_conversion_table['split'].isna() | 
+    #                                                 (new_conversion_table['split'] == '')]
+    
+    # Double check if bids_file exists (only if existing table has data)
+    if not existing_conversion_table.empty and 'bids_name' in existing_conversion_table.columns:
+        for i, row in existing_conversion_table.iterrows():
+            if pd.notna(row.get('bids_name')) and pd.notna(row.get('bids_path')):
+                bids_files = glob('*'.join(row['bids_name'].split('_')), root_dir=row['bids_path'])
+                if not bids_files and not row['status'] == 'check':
+                    existing_conversion_table.loc[i, 'status'] = 'run'
     
     # Extract files not in existing conversion table
-    diff = pd.concat([existing_conversion_table, new_conversion_table]).drop_duplicates(
-        subset=['raw_path', 'raw_name'],
-        keep=False,
-    ).reset_index(drop=True)
+    if existing_conversion_table.empty:
+        # If existing table is empty, all new entries are the diff
+        diff = new_conversion_table
+    else:
+        diff = pd.concat([existing_conversion_table, new_conversion_table]).drop_duplicates(
+            subset=['raw_path', 'raw_name'],
+            keep=False,
+        ).reset_index(drop=True)
     
-    if len(diff) == 0:
+    if diff.empty:
         print("No new files to add to conversion table.")
         return existing_conversion_table, conversion_file
     
     else:
-        # Always set status to 'run' for new files
+        # Set status to 'run' only for processed/skip files, preserve 'check' status
         if 'status' in diff.columns:
+            # Only change 'processed' and 'skip' to 'run', keep 'check' as is
             diff.loc[diff['status'].isin(['processed', 'skip']), 'status'] = 'run'
+            # Note: 'check' status is preserved for tasks not in approved list
         
-        updated_table = pd.concat([existing_conversion_table, diff], ignore_index=True)  
+        updated_table = pd.concat([existing_conversion_table, diff], ignore_index=True)
+        
         print(f"Adding {len(diff)} new files to conversion table.")
         
         return updated_table, conversion_file
@@ -940,9 +1009,8 @@ def bidsify(config: dict):
     deviants = df[df['status'] == 'check']
     if len(deviants) > 0:
         log('BIDS', 'Deviants found, please check the conversion table and run again', level='warning', logfile=logfile, logpath=logpath)
-        # Still create BIDS report even when deviants found
         df.to_csv(conversion_file, sep='\t', index=False)
-        update_bids_report(df, config)
+        # update_bids_report(df, config)
         return
 
     n_files_to_process = len(df[df['status'] == 'run'])
@@ -971,7 +1039,7 @@ def bidsify(config: dict):
 
         raw_file = f"{d['raw_path']}/{d['raw_name']}"
 
-        bids_path, raw_info = bids_path_from_filename(raw_file,
+        bids_path, raw_info = bids_path_from_rawname(raw_file,
                                             d['session_from'],
                                             config,
                                             pmap)
@@ -1020,13 +1088,28 @@ def bidsify(config: dict):
                     verbose='error'
                 )
                 
+                # Ensure JSON sidecar exists for processed files
+                if bids_path.processing:
+                    json_path = bids_path.copy().update(extension='.json', split=None)
+                    if not exists(json_path.fpath):
+                        print(f"Creating missing JSON sidecar: {json_path.basename}")
+                        # Create minimal sidecar
+                        sidecar_data = {
+                            'TaskName': bids_path.task,
+                            'SamplingFrequency': raw.info['sfreq'],
+                            'PowerLineFrequency': raw.info['line_freq'],
+                            'Manufacturer': 'Elekta'
+                        }
+                        with open(json_path.fpath, 'w') as f:
+                            json.dump(sidecar_data, f, indent=4)
+                
                 # Operation tracked via JSON logging in update_bids_report()
                         
             except Exception as e:
                 print(f"Error writing BIDS file: {e}")
                 # If write_raw_bids fails, try to save the raw file directly
                 # Fall back on raw.save if write_raw_bids fails
-                fname = bids_path.copy().update(suffix=datatype, extension = '.fif').fpath
+                fname = bids_path.copy().update(suffix='meg', extension = '.fif').fpath
                 try:
                     raw.save(fname, overwrite=True, verbose='error')
                 except Exception as e:
@@ -1064,7 +1147,7 @@ def bidsify(config: dict):
     update_bids_report(df, config)
     log('BIDS', f'All files bidsified according to {conversion_file}', level='info', logfile=logfile, logpath=logpath)
     
- 
+
 def update_bids_report(conversion_table: pd.DataFrame, config: dict):
     """
     Update the BIDS results report with processed entries in JSON format, 
@@ -1093,19 +1176,19 @@ def update_bids_report(conversion_table: pd.DataFrame, config: dict):
         except (json.JSONDecodeError, FileNotFoundError):
             existing_report = []
     
-    # Create a set of existing entries for duplicate detection
-    existing_entries = set()
+    # Create a dict of existing entries for duplicate detection
+    existing_entries = {}
     for entry in existing_report:
         source_file = entry['Source File']
         bids_file = entry['BIDS File']
         
-        # Convert lists to tuples for hashability
+        # Convert lists to tuples for hashability as dict keys
         if isinstance(source_file, list):
             source_file = tuple(source_file)
         if isinstance(bids_file, list):
             bids_file = tuple(bids_file)
             
-        existing_entries.add((source_file, bids_file))
+        existing_entries[(source_file, bids_file)] = entry
     
     # Group split files together by base filename
     df = conversion_table.drop_duplicates(subset=['raw_path', 'raw_name', 'bids_path', 'bids_name'])
@@ -1200,12 +1283,11 @@ def update_bids_report(conversion_table: pd.DataFrame, config: dict):
         primary_source = source_files[0] if source_files else ""
         primary_bids = bids_files if bids_files else ""
         
-        # existing_entries contains tuples of (source_file, bids_file) where each
-        # element may be a string or a tuple. Check for duplicates by testing
-        # whether any existing entry contains the primary_source in its source
-        # component (handles both single and grouped source entries).
+        # existing_entries is a dict where keys are (source_file, bids_file) tuples
+        # Check for duplicates by testing whether any existing entry key contains 
+        # the primary_source in its source component (handles both single and grouped source entries).
         duplicate_found = False
-        for existing_src, existing_bids in existing_entries:
+        for (existing_src, existing_bids) in existing_entries.keys():
             if existing_src == primary_source or (isinstance(existing_src, tuple) and primary_source in existing_src):
                 duplicate_found = True
                 break
@@ -1354,7 +1436,6 @@ def update_bids_report(conversion_table: pd.DataFrame, config: dict):
     
     # Combine existing and new entries
     updated_report = existing_report + new_entries
-
     # Write updated report back to file
     with open(report_file, 'w') as f:
         json.dump(updated_report, f, indent=4)
@@ -1364,7 +1445,7 @@ def update_bids_report(conversion_table: pd.DataFrame, config: dict):
     logpath = join(config.get('Root', ''), config.get('Name', ''), 'logs')
     log('BIDS', f'BIDS report updated: {len(new_entries)} new entries added to existing {len(existing_report)} entries',
         logfile=logfile, logpath=logpath)
-    
+
     return len(new_entries)   
 
 def args_parser():
@@ -1390,6 +1471,7 @@ It includes:
                                      ''',
                                      add_help=True)
     parser.add_argument('-c', '--config', type=str, help='Path to the configuration file', default=None)
+    parser.add_argument('-t', '--only-table', action='store_true', help='Run only pre-analysis and conversion table creation', default=False)
     args = parser.parse_args()
     return args
 
@@ -1397,6 +1479,7 @@ It includes:
 def validate_bids(config: dict):
     """
     Validate BIDS directory structure and contents using bids-validator.
+    Also generates an MNE-BIDS report for the raw data.
     
     Args:
         config (dict): Configuration dictionary with BIDS path
@@ -1407,55 +1490,43 @@ def validate_bids(config: dict):
     
     bids_root = config['BIDS']
     logfile = config.get('Logfile', 'bidsify.log')
-    logpath = config.get('BIDS', '').replace('raw', 'log')
+    logpath = join(config.get('Root', ''), config.get('Name', ''), 'logs')
     
     if not os.path.exists(bids_root):
         log('BIDS', f"BIDS directory {bids_root} does not exist", level='error', logfile=logfile, logpath=logpath)
         return False
     
+    # Generate MNE-BIDS report (only for raw BIDS, not derivatives)
     try:
-        # Run bids-validator
-        result = subprocess.run(
-            ['bids-validator', bids_root, '--json'],
-            capture_output=True,
-            text=True,
-            timeout=300  # 5 minute timeout
-        )
+        from mne_bids.report import make_report
         
-        if result.returncode == 0:
-            log('BIDS', 'BIDS validation passed', level='info', logfile=logfile, logpath=logpath)
-            return True
-        else:
-            # Parse JSON output for detailed errors
+        print("Generating MNE-BIDS report...")
+        report_path = join(bids_root, 'report.html')
+        
+        # Temporarily rename derivatives folder to exclude it from make_report search
+        derivatives_path = join(bids_root, 'derivatives')
+        temp_derivatives_path = join(bids_root, '.derivatives_temp')
+        derivatives_renamed = False
+        
+        if os.path.exists(derivatives_path):
             try:
-                validation_result = json.loads(result.stdout)
-                errors = validation_result.get('issues', {}).get('errors', [])
-                warnings = validation_result.get('issues', {}).get('warnings', [])
+                os.rename(derivatives_path, temp_derivatives_path)
+                derivatives_renamed = True
+            except OSError:
+                print("Warning: Could not temporarily rename derivatives folder")
+        
+        try:
+            # Generate report only for raw BIDS data
+            make_report(root=bids_root, verbose=False)
+            print(f"MNE-BIDS report generated: {report_path}")
+        finally:
+            # Restore derivatives folder
+            if derivatives_renamed and os.path.exists(temp_derivatives_path):
+                os.rename(temp_derivatives_path, derivatives_path)
                 
-                for error in errors:
-                    log('BIDS', f"Validation error: {error.get('reason', 'Unknown error')}", 
-                        level='error', logfile=logfile, logpath=logpath)
-                
-                for warning in warnings:
-                    log('BIDS', f"Validation warning: {warning.get('reason', 'Unknown warning')}", 
-                        level='warning', logfile=logfile, logpath=logpath)
-                        
-            except json.JSONDecodeError:
-                # Fallback to plain text output
-                log('BIDS', f"Validation failed: {result.stderr}", level='error', logfile=logfile, logpath=logpath)
-            
-            return False
-            
-    except subprocess.TimeoutExpired:
-        log('BIDS', 'BIDS validation timed out', level='error', logfile=logfile, logpath=logpath)
-        return False
-    except FileNotFoundError:
-        log('BIDS', 'bids-validator not found. Install with: npm install -g bids-validator', 
-            level='error', logfile=logfile, logpath=logpath)
-        return False
     except Exception as e:
-        log('BIDS', f"Validation error: {str(e)}", level='error', logfile=logfile, logpath=logpath)
-        return False
+        print(f"Warning: Could not generate MNE-BIDS report: {e}")
+        log('BIDS', f"MNE-BIDS report generation failed: {e}", level='warning', logfile=logfile, logpath=logpath)
 
 def main(config:str=None):
     """
@@ -1503,6 +1574,17 @@ def main(config:str=None):
         # If config is a string, assume it's a path to a config file
         config = get_parameters(config)
     
+    # Check for electron mode
+    
+    if args.only_table:
+        # Dry-run mode: only generate conversion table, don't convert files
+        print("Generating conversion table only")
+        df, conversion_file = update_conversion_table(config)
+        df.to_csv(conversion_file, sep='\t', index=False)
+        print(f"Conversion table saved to: {conversion_file}")
+        return True
+    
+    # Normal mode: full conversion
     create_dataset_description(config)
     create_proc_description(config)
     bidsify(config)

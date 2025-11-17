@@ -52,12 +52,29 @@
     "files": [
       "main.js",
       "preload.js",
-      "renderer.js",
-      "../bids_viewer.html",
-      "assets/**/*"
+      "index.html",
+      "app.js",
+      "bids_viewer.html",
+      "assets/**/*",
+      "resources/**/*",
+      "../bidsify.py",
+      "../utils.py",
+      "../default_config.yml",
+      "../requirements.txt"
+    ],
+    "extraResources": [
+      {
+        "from": "resources",
+        "to": "resources",
+        "filter": ["**/*"]
+      }
     ],
     "directories": {
       "output": "dist"
     }
+  },
+  "dependencies": {
+    "js-yaml": "^4.1.1",
+    "bids-validator": "^1.14.13"
   }
 }

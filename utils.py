@@ -20,8 +20,13 @@ from pathlib import Path
 import json
 import yaml
 
-# tkinter file dialog imports
-from tkinter import filedialog
+# tkinter file dialog imports (optional - only needed for GUI)
+try:
+    from tkinter import filedialog
+    HAS_TKINTER = True
+except (ImportError, ModuleNotFoundError):
+    HAS_TKINTER = False
+    filedialog = None
 
 
 # Predefined patterns for filename parsing
@@ -39,6 +44,8 @@ opm_exceptions_patterns = ['HPIbefore', 'HPIafter', 'HPImiddle',
 
 def askdirectory(**kwargs):
     """tkinter filedialog.askdirectory wrapper"""
+    if not HAS_TKINTER:
+        raise RuntimeError("tkinter is not available. This function requires a GUI environment.")
     
     directory = filedialog.askdirectory(
         title=kwargs.get('title', 'Select Directory'),
@@ -128,6 +135,9 @@ def askForConfig():
     # Create hidden root window
     # if not exists(default_output_path):
     #     default_output_path = '.'
+    
+    if not HAS_TKINTER:
+        raise RuntimeError("tkinter is not available. This function requires a GUI environment.")
     
     config_file = filedialog.askopenfilename(
         title="Select Configuration File",
