@@ -15,6 +15,7 @@ import filecmp
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
 import sys
+import hashlib
 
 calibration = '/neuro/databases/sss/sss_cal.dat'
 crosstalk = '/neuro/databases/ctc/ct_sparse.fif'
@@ -29,6 +30,127 @@ from utils import (
 )
 
 global local_dir
+
+def calculate_file_hash(file_path, algorithm='sha256', chunk_size=8192):
+    """Calculate hash for file versioning without storing the file."""
+    hash_algo = hashlib.new(algorithm)
+    try:
+        with open(file_path, 'rb') as f:
+            while chunk := f.read(chunk_size):
+                hash_algo.update(chunk)
+        return hash_algo.hexdigest()
+    except Exception as e:
+        print(f"Error calculating hash for {file_path}: {e}")
+        return None
+
+def create_file_version_entry(file_path, operation='copy', destination=None, parent_hash=None):
+    """Create a version entry for a file without storing the actual file."""
+    try:
+        stat_info = os.stat(file_path)
+        file_hash = calculate_file_hash(file_path)
+        
+        return {
+            'file_path': file_path,
+            'file_name': basename(file_path),
+            'file_size': stat_info.st_size,
+            'modified_time': stat_info.st_mtime,
+            'created_time': getattr(stat_info, 'st_birthtime', stat_info.st_ctime),
+            'file_hash': file_hash,
+            'parent_hash': parent_hash,  # Hash of previous version
+            'operation': operation,  # 'copy', 'modify', 'delete', 'move'
+            'destination': destination,
+            'timestamp': datetime.now().isoformat(),
+            'version': 1  # Will be updated when adding to database
+        }
+    except Exception as e:
+        print(f"Error creating version entry for {file_path}: {e}")
+        return None
+
+def update_file_version_database(file_entry, version_db_path):
+    """Update the file version database with new entry."""
+    # Load existing database
+    version_db = []
+    if exists(version_db_path):
+        try:
+            with open(version_db_path, 'r') as f:
+                version_db = json.load(f)
+        except (json.JSONDecodeError, FileNotFoundError):
+            version_db = []
+    
+    # Find existing entries for this file
+    file_path = file_entry['file_path']
+    existing_versions = [entry for entry in version_db if entry['file_path'] == file_path]
+    
+    # Determine version number
+    if existing_versions:
+        # Check if this is actually a new version (different hash)
+        latest_version = max(existing_versions, key=lambda x: x['version'])
+        if latest_version['file_hash'] == file_entry['file_hash']:
+            # Same file, don't add duplicate
+            return len(existing_versions)
+        
+        # New version - increment version number and set parent hash
+        file_entry['version'] = latest_version['version'] + 1
+        file_entry['parent_hash'] = latest_version['file_hash']
+    else:
+        # First version of this file
+        file_entry['version'] = 1
+    
+    # Add to database
+    version_db.append(file_entry)
+    
+    # Save updated database
+    with open(version_db_path, 'w') as f:
+        json.dump(version_db, f, indent=2)
+    
+    return file_entry['version']
+
+def get_file_history(file_path, version_db_path):
+    """Get complete history of a file from the version database."""
+    if not exists(version_db_path):
+        return []
+    
+    try:
+        with open(version_db_path, 'r') as f:
+            version_db = json.load(f)
+        
+        # Get all versions of this file
+        file_versions = [entry for entry in version_db if entry['file_path'] == file_path]
+        
+        # Sort by version number
+        return sorted(file_versions, key=lambda x: x['version'])
+    except Exception as e:
+        print(f"Error reading version database: {e}")
+        return []
+
+def generate_file_diff_report(file_path, version_db_path):
+    """Generate a report showing changes between file versions."""
+    history = get_file_history(file_path, version_db_path)
+    
+    if len(history) < 2:
+        return "No version history or only one version exists."
+    
+    report = f"File Version History for: {file_path}\n"
+    report += "=" * 50 + "\n\n"
+    
+    for i, version in enumerate(history):
+        report += f"Version {version['version']} ({version['timestamp']})\n"
+        report += f"  Operation: {version['operation']}\n"
+        report += f"  Size: {version['file_size']} bytes\n"
+        report += f"  Hash: {version['file_hash'][:16]}...\n"
+        
+        if i > 0:
+            prev_version = history[i-1]
+            size_change = version['file_size'] - prev_version['file_size']
+            if size_change != 0:
+                report += f"  Size change: {size_change:+d} bytes\n"
+        
+        if version.get('destination'):
+            report += f"  Destination: {version['destination']}\n"
+        
+        report += "\n"
+    
+    return report
 
 def check_fif(file_path):
     """Check if a file is a .fif file based on its extension."""
@@ -169,19 +291,38 @@ def copy_squid_databases(calibration_path=None, crosstalk_path=None):
     else:
         print(f'Crosstalk file {crosstalk} does not exist.')
 
-def copy_data(source, destination):
+def copy_stimuli_data(source, destination):
+    """
+    Copy stimuli data from source to destination.
+    """
+    if exists(source):
+        files = glob(source + '/*')
+        for file in files:
+            if isdir(file):
+                dest_dir = join(destination, basename(file))
+                copytree(file, dest_dir, dirs_exist_ok=True)
+            else:
+                copy2(file, destination)
+        return files
+    return []
+
+def copy_data(source, destination, version_db_path=None):
     """
     Copy file from source to destination with intelligent handling of .fif files.
+    Includes optional file versioning.
     
     Args:
         source: Source file path
         destination: Destination file path
-        logfile: Optional log filename
-        log_path: Optional log directory path
+        version_db_path: Optional path to version database for tracking
     """
     existing_file = 0
     new_file = 0
     failed_file = 0
+
+    # Create version entry before any operations (if versioning enabled)
+    if version_db_path:
+        version_entry = create_file_version_entry(source, 'copy', destination)
 
     if check_match(source, destination)[0]:
         
@@ -231,6 +372,14 @@ def copy_data(source, destination):
             message = f'Copied'
             level = 'info'
             new_file = 1
+    
+    # Update version database if successful and versioning enabled
+    if match and new_file > 0 and version_db_path and version_entry:
+        try:
+            version_num = update_file_version_database(version_entry, version_db_path)
+            message += f' (v{version_num})'
+        except Exception as e:
+            print(f"Warning: Failed to update version database: {e}")
     
     return match, source, destination, message, existing_file, new_file, failed_file
 
@@ -371,14 +520,14 @@ def make_process_list(paths, check_existing=False):
 
     return files
 
-def process_file_worker(file_info, logfile):
+def process_file_worker(file_info, logfile, version_db_path=None):
     """
     Worker function to process a single file transfer.
     
     Args:
         file_info: Tuple of (source, destination)
         logfile: Log filename
-        log_path: Log directory path
+        version_db_path: Optional path to version database
     
     Returns:
         Tuple of (success, source, destination, message)
@@ -386,7 +535,7 @@ def process_file_worker(file_info, logfile):
     match, source, destination = file_info
 
     try:
-        match, source, destination, msg, existing_file, new_file, failed_file = copy_data(source, destination)
+        match, source, destination, msg, existing_file, new_file, failed_file = copy_data(source, destination, version_db_path)
     except Exception as e:
         msg = f"Error processing file: {str(e)}"
         match = False
@@ -476,6 +625,81 @@ def parallel_copy_files(paths, max_workers=4):
         pbar.close()
     # Log summary
     log('Copy', f'Parallel copy completed. Files to process: {len(files_to_process)}, Success: {new_file_count}, Failed: {failed_file_count}',
+        'info',
+        logfile)
+
+    return results
+
+def copy_files(paths, version_db_path=None):
+    """
+    Copy files in parallel using ThreadPoolExecutor.
+    
+    Args:
+        paths: directories
+        version_db_path: Optional path to version database
+    
+    Returns:
+        List of results from file processing
+    """
+    files = make_process_list(paths)
+    files_to_process = [file for file in files if not file[0]]
+    
+    # Extract log configuration from config
+    
+    
+    local_dir = paths.get('raw', '')
+    project_root = paths.get('project_root', '')
+    logfile = paths.get('log_file', '')
+
+    results = []
+    new_file_count = 0
+    existing_file_count = len([file for file in files if file[0]])
+    failed_file_count = 0
+    
+    pbar = tqdm(total=len(files_to_process), 
+                       desc="Copy files", 
+                       unit=f' file(s)',
+                       disable=not sys.stdout.isatty(),
+                       ncols=80,
+                       bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]')
+    
+
+    for file_info in files:
+        try:
+            match, source, destination, message, existing_file, new_file, failed_file = process_file_worker(file_info, logfile, version_db_path)
+            results.append((match, source, destination, message))
+            failed_file_count += failed_file
+            new_file_count += new_file
+            # Update progress bar
+            status = "✓" if match else "✗"
+            pbar.set_postfix({
+                'New files': new_file_count,
+                'Existing files': existing_file_count,
+                'Failed': failed_file_count,
+                'Latest': f"{status} {basename(source)}"
+            })
+            pbar.update(1)
+        except Exception as exc:
+            failed_file_count += 1
+            match, source, destination = file_info
+            error_msg = f'Exception occurred: {exc}'
+            results.append((False, source, destination, error_msg))
+            log('Copy', f'EXCEPTION: {error_msg} - {source} -> {destination}', 'error', logfile)
+            
+            # Update progress bar for exceptions
+            pbar.set_postfix({
+                'New files': new_file_count,
+                'Existing files': existing_file_count,
+                'Failed': failed_file_count,
+                'Latest': f"✗ {basename(source)} (ERROR)"
+            })
+            pbar.update(1)
+            
+            print(f'{new_file_count}/{len(files_to_process)}')
+    # Close progress bar
+    pbar.close()
+    # Log summary
+    log('Copy', f'Copy completed. Files to process: {len(files_to_process)}, Success: {new_file_count}, Failed: {failed_file_count}',
         'info',
         logfile)
 
@@ -596,34 +820,69 @@ def update_copy_report(results, paths):
 
 def args_parser():
     parser = argparse.ArgumentParser(description=
-                                     '''Maxfilter
+                                     '''Copy files to Cerberos with file versioning
                                      
-                                     Will use a configuation file to run MaxFilter on the data.
+                                     Will use a configuration file to copy files and track versions.
                                      Select to open an existing configuration file or create a new one.
                                      
                                      ''',
                                      add_help=True,
-                                     usage='maxfilter [-h] [-c CONFIG]')
+                                     usage='copy_to_cerberos [-h] [-c CONFIG] [--history FILE] [--no-versioning]')
     parser.add_argument('-c', '--config', type=str, help='Path to the configuration file', default=None)
+    parser.add_argument('--history', type=str, help='Show version history for a specific file', default=None)
+    parser.add_argument('--no-versioning', action='store_true', help='Disable file versioning', default=False)
+    parser.add_argument('--version-db', type=str, help='Path to version database file', default=None)
     args = parser.parse_args()
     return args
 
 # Create local directories for each project
-def main(config: str=None):
+def main(config: str=None, enable_versioning=True):
+
+    args = args_parser()
+    
+    # Handle version history query
+    if args.history:
+        version_db_path = args.version_db
+        if not version_db_path:
+            if config or args.config:
+                config_file = config or args.config
+                paths = project_paths(config_file)
+                version_db_path = join(paths['logs'], 'file_versions.json')
+            else:
+                print("Error: Need --version-db path or --config to locate version database")
+                return False
+        
+        history_report = generate_file_diff_report(args.history, version_db_path)
+        print(history_report)
+        return True
 
     if config is None:
-        args = args_parser()
         config = args.config
         if not config or not exists(config):
             config = askForConfig()
 
+    # Determine if versioning should be enabled
+    enable_versioning = not args.no_versioning
+
     paths = project_paths(config, init=True)
+    
+    # Setup version database if enabled
+    version_db_path = None
+    if enable_versioning:
+        version_db_path = args.version_db or join(paths['logs'], 'file_versions.json')
+        print(f"File versioning enabled. Database: {version_db_path}")
+    
     # If config is already a dict, use it as-is
     copy_squid_databases(paths['Calibration'], paths['Crosstalk'])
     
-    # Perform parallel file copying
-    results = parallel_copy_files(paths, max_workers=8)
+    # Perform file copying with versioning
+    results = copy_files(paths, version_db_path)
     update_copy_report(results, paths)
+    
+    if enable_versioning:
+        print(f"File version database updated: {version_db_path}")
+        print("Use --history <file_path> to view file history")
+    
     return True
 
 if __name__ == "__main__":
