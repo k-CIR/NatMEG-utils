@@ -18,6 +18,7 @@ from typing import Dict, List, Optional, Union
 from copy import deepcopy
 from mne_bids import print_dir_tree
 from utils import log, askdirectory
+from file_tracker import FileTracker, STATUS_SYNCED, STATUS_SYNCING, STATUS_READY_TO_DELETE
 
 sync_config = '/home/natmeg/.config/sync_config.yml'
 general_log_file = '/home/natmeg/.log/sync_to_server.log'
@@ -147,9 +148,18 @@ class ServerSync:
                       exclude_patterns: List[str] = None,
                       include_patterns: List[str] = None,
                       dry_run: bool = False,
-                      delete: bool = False) -> bool:
+                      delete: bool = False,
+                      project_config: str = None) -> bool:
         """Sync a directory to remote server and optionally delete local files after successful transfer"""
-        
+
+        tracker = None
+        if project_config:
+            try:
+                tracker = FileTracker(project_config)
+            except Exception as e:
+                log(f"File tracker init failed: {e}", 'warning',
+                    logfile=self.log_file, logpath=log_path)
+
         log_path = f'{local_path}/log' or './log'
         if not os.path.exists(log_path):
             os.makedirs(log_path, exist_ok=True)
@@ -191,11 +201,21 @@ class ServerSync:
             if result.returncode == 0:
                 log(f"Successfully synced {local_path} to {server_name}", 'info',
                     logfile=self.log_file, logpath=log_path)
-                
+
+                if tracker:
+                    transferred = self._get_transferred_files(result.stdout)
+                    for file_path in transferred:
+                        file_id = tracker.find_file_by_project_path(file_path)
+                        if file_id:
+                            tracker.update_status(file_id, STATUS_SYNCED, compute_hash=False)
+                            tracker.mark_ready_to_delete([file_id])
+                            log(f"Marked synced and ready to delete: {file_path}", 'info',
+                                logfile=self.log_file, logpath=log_path)
+
                 # If delete flag is set and sync was successful, delete local files
                 if delete and not dry_run:
-                    self._delete_local_files_after_sync(local_path, result.stdout, log_path)
-                
+                    self._delete_local_files_after_sync(local_path, result.stdout, log_path, tracker)
+
                 return True
             else:
                 log(f"Rsync failed with return code {result.returncode}", 'error',
@@ -207,44 +227,56 @@ class ServerSync:
                 logfile=self.log_file, logpath=log_path)
             return False
     
-    def _delete_local_files_after_sync(self, local_path: str, rsync_output: str, log_path: str):
+    def _get_transferred_files(self, rsync_output: str) -> List[str]:
+        """Parse rsync output to get list of transferred file paths"""
+        import re
+        transferred = []
+        lines = rsync_output.strip().split('\n')
+        for line in lines:
+            match = re.match(r'^[><]f[\+\.\s]*\s+(.+)$', line.strip())
+            if match:
+                transferred.append(match.group(1))
+        return transferred
+
+    def _delete_local_files_after_sync(self, local_path: str, rsync_output: str, log_path: str, tracker=None):
         """Delete local files that were successfully transferred to server"""
         try:
             import re
-            
-            # Parse rsync output to find transferred files
-            transferred_files = []
-            lines = rsync_output.strip().split('\n')
-            
-            for line in lines:
-                # Look for lines that indicate file transfers (starts with > or <)
-                # Format: >f+++++++++ path/to/file
-                match = re.match(r'^[><]f[\+\.\s]*\s+(.+)$', line.strip())
-                if match:
-                    relative_path = match.group(1)
-                    full_path = os.path.join(local_path, relative_path)
-                    if os.path.exists(full_path) and os.path.isfile(full_path):
-                        transferred_files.append(full_path)
-            
-            # Delete the transferred files
+
+            transferred = self._get_transferred_files(rsync_output)
+
             deleted_count = 0
-            for file_path in transferred_files:
+            skipped_count = 0
+            for relative_path in transferred:
+                full_path = os.path.join(local_path, relative_path)
+                if not os.path.exists(full_path) or not os.path.isfile(full_path):
+                    continue
+
+                if tracker:
+                    file_id = tracker.find_file_by_project_path(full_path)
+                    if file_id and not tracker.safe_to_delete(file_id):
+                        log(f"Skipped unsafe file (not ready to delete): {full_path}", 'warning',
+                            logfile=self.log_file, logpath=log_path)
+                        skipped_count += 1
+                        continue
+
                 try:
-                    os.remove(file_path)
+                    os.remove(full_path)
                     deleted_count += 1
-                    log(f"Deleted local file after successful sync: {file_path}", 'info',
+                    log(f"Deleted local file after successful sync: {full_path}", 'info',
                         logfile=self.log_file, logpath=log_path)
                 except Exception as e:
-                    log(f"Failed to delete local file {file_path}: {e}", 'warning',
+                    log(f"Failed to delete local file {full_path}: {e}", 'warning',
                         logfile=self.log_file, logpath=log_path)
-            
-            if deleted_count > 0:
-                log(f"Deleted {deleted_count} local files after successful sync", 'info',
-                    logfile=self.log_file, logpath=log_path)
-                
-                # Clean up empty directories
+
+            if deleted_count > 0 or skipped_count > 0:
+                msg = f"Deleted {deleted_count} local files"
+                if skipped_count > 0:
+                    msg += f", Skipped {skipped_count} (not verified synced)"
+                log(msg, 'info', logfile=self.log_file, logpath=log_path)
+
                 self._cleanup_empty_directories(local_path, log_path)
-            
+
         except Exception as e:
             log(f"Error during local file cleanup: {e}", 'warning',
                 logfile=self.log_file, logpath=log_path)
@@ -477,7 +509,8 @@ Examples:
             exclude_patterns=args.exclude,
             include_patterns=args.include,
             dry_run=args.dry_run,
-            delete=args.delete
+            delete=args.delete,
+            project_config=args.config
         )
 
     if args.directory:
@@ -489,7 +522,8 @@ Examples:
             exclude_patterns=args.exclude,
             include_patterns=args.include,
             dry_run=args.dry_run,
-            delete=args.delete
+            delete=args.delete,
+            project_config=args.config
         )
     else:
         parser.print_help()

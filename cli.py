@@ -1,57 +1,61 @@
 #!/usr/bin/env python3
 """
-NatMEG Pipeline Application
-Main executable entry point for the NatMEG processing pipeline
+Seshat CLI
+Main command-line interface for the Seshat data processing pipeline
 """
 import sys
 import os
 import argparse
 from pathlib import Path
+
+# Add the current directory to the Python path for local imports
+_current_dir = str(Path(__file__).parent)
+if _current_dir not in sys.path:
+    sys.path.insert(0, _current_dir)
+
 import yaml
 from utils import log, configure_logging
 
-# Add the current directory to the Python path
-sys.path.insert(0, str(Path(__file__).parent))
 
 def main():
-    """Main entry point for the natmeg command"""
+    """Main entry point for the seshat command"""
     parser = argparse.ArgumentParser(
-        description="NatMEG MEG/EEG Processing Pipeline",
+        description="Seshat - NatMEG Data Processing Pipeline",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   # Create default configuration file
-  natmeg create-config                    # Creates default_config.yml
-  natmeg create-config -o my_config.yml   # Creates my_config.yml
+  seshat create-config                    # Creates default_config.yml
+  seshat create-config -o my_config.yml   # Creates my_config.yml
   
   # Launch GUI for interactive configuration
-  natmeg gui
-  natmeg gui --config existing_config.yml
+  seshat gui
+  seshat gui --config existing_config.yml
   
   # Run complete processing pipeline
-  natmeg run --config config.yml
+  seshat run --config config.yml
   
   # Run individual pipeline components
-  natmeg copy --config config.yml         # Data synchronization only
-  natmeg opm-preprocess --config config.yml          # OPM preprocessing only
-  natmeg maxfilter --config config.yml    # MaxFilter processing only
-  natmeg bidsify --config config.yml      # BIDS conversion only
+  seshat copy --config config.yml         # Data synchronization only
+  seshat opm-preprocess --config config.yml          # OPM preprocessing only
+  seshat maxfilter --config config.yml    # MaxFilter processing only
+  seshat bidsify --config config.yml      # BIDS conversion only
   
   # Server synchronization workflow
-  natmeg sync --config project.yml [--dry-run]             # Sync operation using project config [preview]
-  natmeg sync --directory /data/project [--dry-run]        # Sync operation for custom directory [preview]
-  natmeg sync --create-config                             # Create example server config
-  natmeg sync --test --server cir --server-config servers.yml  # Test server connection
-  natmeg sync --config project.yml --delete               # Sync with deletion using project config
-  natmeg sync --directory /data/project --exclude "*.log" --include "*.fif"
+  seshat sync --config project.yml [--dry-run]             # Sync operation using project config [preview]
+  seshat sync --directory /data/project [--dry-run]        # Sync operation for custom directory [preview]
+  seshat sync --create-config                             # Create example server config
+  seshat sync --test --server cir --server-config servers.yml  # Test server connection
+  seshat sync --config project.yml --delete               # Sync with deletion using project config
+  seshat sync --directory /data/project --exclude "*.log" --include "*.fif"
   
   # Advanced sync options
-  natmeg sync --directory ./processed_data --server server_name \\
+  seshat sync --directory ./processed_data --server server_name \\
     --exclude "temp/*" --exclude "*.tmp" \\
     --include "derivatives/*" \\
     --dry-run --delete
 
-For more information, visit: https://github.com/natmeg/natmeg-utils
+For more information, visit: https://github.com/k-CIR/NatMEG-utils
         """
     )
     
@@ -107,7 +111,21 @@ For more information, visit: https://github.com/natmeg/natmeg-utils
     sync_parser.add_argument('--include', action='append', metavar='PATTERN', help='Include files matching pattern (can be used multiple times)')
     sync_parser.add_argument('--delete', action='store_true', help='Delete local files after successful sync to server (use with caution!)', default=False)
 
-    
+    # File tracking commands
+    track_parser = subparsers.add_parser('track', help='File tracking operations')
+    track_parser.add_argument('--config', '-c', help='Project configuration file')
+    track_parser.add_argument('subcommand', choices=['status', 'verify', 'sync-central',
+                                                      'sync-from-central', 'delete-ready', 'global-status',
+                                                      'migrate', 'scan', 'import'],
+                              help='Track command to execute')
+    track_parser.add_argument('--dry-run', action='store_true', help='Dry run mode for delete-ready')
+    track_parser.add_argument('--file', '-f', help='Specific file path for verify')
+    track_parser.add_argument('--path', '-p', help='Project path for migrate/scan (overrides config)')
+    track_parser.add_argument('--assume-synced', action='store_true', help='Assume files are already synced')
+    track_parser.add_argument('--assume-copied', action='store_true', help='Assume files are copied (default)')
+    track_parser.add_argument('--copy-log', help='Path to copy_results.json to import from')
+
+
     args = parser.parse_args()
     
     if not args.command:
@@ -168,17 +186,17 @@ For more information, visit: https://github.com/natmeg/natmeg-utils
             
             if config['RUN'].get('Sync to CIR', False):
                 import sync_to_cir
-                # Use BIDS directory as the sync source
                 bids_path = config['Project'].get('BIDS', '.')
                 sync_path = os.path.dirname(bids_path) if bids_path else '.'
-                
+
                 syncer = sync_to_cir.ServerSync()
                 success = syncer.sync_directory(
-                    sync_path, 'cir',  # Default to 'cir' server
+                    sync_path, 'cir',
                     exclude_patterns=getattr(args, 'exclude', None),
                     include_patterns=getattr(args, 'include', None),
                     dry_run=dry_run,
-                    delete=getattr(args, 'delete', False)
+                    delete=getattr(args, 'delete', False),
+                    project_config=args.config
                 )
                 pipeline_success.append(success)
             
@@ -270,7 +288,8 @@ For more information, visit: https://github.com/natmeg/natmeg-utils
                     exclude_patterns=args.exclude,
                     include_patterns=args.include,
                     dry_run=args.dry_run,
-                    delete=args.delete
+                    delete=args.delete,
+                    project_config=args.config
                 )
                 if success:
                     log("Sync", "Completed successfully!", 'info')
@@ -303,7 +322,8 @@ For more information, visit: https://github.com/natmeg/natmeg-utils
                     exclude_patterns=args.exclude,
                     include_patterns=args.include,
                     dry_run=args.dry_run,
-                    delete=args.delete
+                    delete=args.delete,
+                    project_config=args.config
                 )
                 if success:
                     log("Sync", "Completed successfully!", 'info')
@@ -313,7 +333,105 @@ For more information, visit: https://github.com/natmeg/natmeg-utils
                 # If no directory specified, show help by invoking original script main
                 from sync_to_cir import main as sync_main
                 sync_main()
-            
+
+        elif args.command == 'track':
+            from file_tracker import FileTracker, CENTRAL_DB
+            import json
+
+            sub = args.subcommand if hasattr(args, 'subcommand') and args.subcommand else args.command
+
+            if sub == 'global-status':
+                if not CENTRAL_DB.exists():
+                    print("Central DB not initialized yet")
+                    return
+                tracker = FileTracker()
+                tracker.project_db = str(CENTRAL_DB)
+                summary = tracker.get_global_summary()
+                print("\nGlobal Status Summary:")
+                for project, statuses in summary.items():
+                    print(f"\n{project}:")
+                    for status, count in sorted(statuses.items()):
+                        print(f"  {status}: {count}")
+
+            elif sub in ('migrate', 'scan') and args.path:
+                project_path = args.path
+                tracker = FileTracker({
+                    'Project': {'Name': os.path.basename(project_path), 'Root': os.path.dirname(project_path) or '.'}
+                })
+                tracker.project_root = project_path
+
+                if sub == 'scan':
+                    result = tracker.scan_and_detect_status(root_path=project_path)
+                    print(json.dumps(result, indent=2))
+                elif sub == 'migrate':
+                    assume_synced = args.assume_synced
+                    assume_copied = not assume_synced
+                    result = tracker.migrate_existing_project(
+                        root_path=project_path,
+                        assume_synced=assume_synced,
+                        assume_copied=assume_copied
+                    )
+                    print(json.dumps(result, indent=2))
+
+            elif args.config:
+                tracker = FileTracker(args.config)
+
+                if sub == 'status':
+                    summary = tracker.get_status_summary()
+                    print(f"\nProject: {tracker.project_name}")
+                    print(f"Project DB: {tracker.project_db}")
+                    print("\nStatus Summary:")
+                    for status, count in sorted(summary.items()):
+                        print(f"  {status}: {count}")
+
+                    print("\nAll tracked files:")
+                    for f in tracker.get_all_files():
+                        print(f"  [{f['status']}] {f['source_path']}")
+
+                elif sub == 'verify':
+                    if args.file:
+                        file_id = tracker.find_file_by_project_path(args.file)
+                        if file_id:
+                            result = tracker.verify_hash(file_id)
+                            print(json.dumps(result, indent=2))
+                        else:
+                            print(f"File not found: {args.file}")
+                    else:
+                        all_files = tracker.get_all_files()
+                        verified = 0
+                        failed = 0
+                        for f in all_files:
+                            result = tracker.verify_hash(f['id'])
+                            if result['verified']:
+                                verified += 1
+                            else:
+                                failed += 1
+                                print(f"FAILED: {f['source_path']} - {result['reason']}")
+                        print(f"\nVerified: {verified}, Failed: {failed}")
+
+                elif sub == 'sync-central':
+                    result = tracker.sync_to_central()
+                    print(json.dumps(result, indent=2))
+
+                elif sub == 'sync-from-central':
+                    result = tracker.sync_from_central()
+                    print(json.dumps(result, indent=2))
+
+                elif sub == 'delete-ready':
+                    result = tracker.delete_orphans(dry_run=args.dry_run)
+                    print(json.dumps(result, indent=2))
+
+                elif sub == 'import':
+                    if args.copy_log:
+                        result = tracker.import_from_copy_results(args.copy_log)
+                        print(json.dumps(result, indent=2))
+                    else:
+                        print("Error: --copy-log required for import command")
+                        return
+
+            else:
+                print(f"Error: Unknown track subcommand: {sub}")
+
     except Exception as e:
         log("Pipeline", f"Error: {e}", 'error')
         sys.exit(1)

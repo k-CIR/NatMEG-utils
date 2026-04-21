@@ -20,8 +20,13 @@ from pathlib import Path
 import json
 import yaml
 
-# tkinter file dialog imports
-from tkinter import filedialog
+# tkinter is optional - only import if available
+try:
+    from tkinter import filedialog
+    TKINTER_AVAILABLE = True
+except ImportError:
+    TKINTER_AVAILABLE = False
+    filedialog = None
 
 
 # Predefined patterns for filename parsing
@@ -39,7 +44,13 @@ opm_exceptions_patterns = ['HPIbefore', 'HPIafter', 'HPImiddle',
 
 def askdirectory(**kwargs):
     """tkinter filedialog.askdirectory wrapper"""
-    
+
+    if not TKINTER_AVAILABLE:
+        raise RuntimeError(
+            "tkinter is not available. Please install tkinter (python3-tk on Linux, "
+            "or use --no-ui flag where available) or set the path manually."
+        )
+
     directory = filedialog.askdirectory(
         title=kwargs.get('title', 'Select Directory'),
         initialdir=kwargs.get('initialdir', '')
@@ -94,6 +105,7 @@ def project_paths(config: str, init=False):
     paths['stimulus'] = config['Project'].get('Stimuli', None)
     paths['calibration'] = config['Project'].get('Calibration', None)
     paths['crosstalk'] = config['Project'].get('Crosstalk', None)
+    paths['config_file'] = config if isinstance(config, str) else None
 
     return paths
 

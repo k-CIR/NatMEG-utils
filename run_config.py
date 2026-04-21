@@ -7,9 +7,19 @@ import re
 import subprocess
 import threading
 import queue
-import tkinter as tk
-from tkinter import ttk, filedialog, messagebox, scrolledtext
-from utils import apply_ansi_colors_to_tk
+
+# tkinter is optional
+try:
+    import tkinter as tk
+    from tkinter import ttk, filedialog, messagebox, scrolledtext
+    TKINTER_AVAILABLE = True
+except ImportError:
+    TKINTER_AVAILABLE = False
+    tk = None
+    ttk = None
+    filedialog = None
+    messagebox = None
+    scrolledtext = None
 
 default_path = '/neuro/data/local'
 
@@ -1184,9 +1194,14 @@ You can also provide a path to an existing configuration file to load its settin
 
 def config_UI(config_file: str = None):
     """Launch the configuration GUI and return the configuration"""
+    if not TKINTER_AVAILABLE:
+        raise RuntimeError(
+            "GUI is not available. tkinter is not installed. "
+            "Please install python3-tk (Linux) or use a different Python installation with tkinter."
+        )
     window = ConfigMainWindow(config_file=config_file)
     window.show()
-    
+
     # Return the configuration data after GUI closes
     return window.config_data
 

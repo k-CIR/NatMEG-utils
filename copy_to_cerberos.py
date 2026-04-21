@@ -29,6 +29,8 @@ from utils import (
     project_paths
 )
 
+from file_tracker import FileTracker, STATUS_PENDING_COPY, STATUS_COPIED
+
 global local_dir
 
 def check_fif(file_path):
@@ -483,12 +485,25 @@ def copy_files(paths):
 
     Args:
         paths: directories
-    
+
     Returns:
         List of results from file processing
     """
+    tracker = None
+    config_file = paths.get('config_file')
+    if config_file:
+        try:
+            tracker = FileTracker(config_file)
+        except Exception as e:
+            log('Copy', f'File tracker init failed: {e}', 'warning', paths.get('log_file', ''))
+
     jobs = make_process_list(paths)
     jobs_to_process = [job for job in jobs if not job[0]]
+
+    if tracker:
+        file_pairs = [(job[1], job[2]) for job in jobs_to_process]
+        registered = tracker.register_files_batch(file_pairs, compute_hash=True)
+        log('Copy', f'Registered {registered} files in tracker', 'info', paths.get('log_file', ''))
 
     estimated_durations, total_size, str_estimates = estimate_job_duration(jobs_to_process)
 
@@ -523,7 +538,10 @@ def copy_files(paths):
             match, source, destination, message, existing_file, new_file, failed_file = process_file_worker(job, logfile)
             results.append((match, source, destination, message))
 
-            
+            if tracker and match and new_file:
+                file_id = tracker.find_file(source)
+                if file_id:
+                    tracker.update_status(file_id['id'], STATUS_COPIED, compute_hash=False)
 
             failed_file_count += failed_file
             new_file_count += new_file
